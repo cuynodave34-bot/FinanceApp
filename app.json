@@ -1,0 +1,28 @@
+{
+  "expo": {
+    "name": "Student Finance App",
+    "slug": "student-finance-app",
+    "scheme": "studentfinanceapp",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "automatic",
+    "plugins": [
+      "expo-router",
+      "expo-secure-store",
+      "expo-local-authentication",
+      "expo-sqlite"
+    ],
+    "experiments": {
+      "typedRoutes": true
+    },
+    "android": {
+      "package": "com.studentfinance.app"
+    },
+    "ios": {
+      "bundleIdentifier": "com.studentfinance.app"
+    },
+    "web": {
+      "bundler": "metro"
+    }
+  }
+}
