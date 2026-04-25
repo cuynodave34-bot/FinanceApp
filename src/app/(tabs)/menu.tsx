@@ -1,5 +1,5 @@
 import { SettingsScreen } from '@/features/settings/screens/SettingsScreen';
 
-export default function SettingsRoute() {
+export default function MenuRoute() {
   return <SettingsScreen />;
 }

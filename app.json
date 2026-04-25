@@ -6,17 +6,64 @@
     "version": "0.1.0",
     "orientation": "portrait",
     "userInterfaceStyle": "automatic",
+    "icon": "./assets/icon.png",
+    "splash": {
+      "image": "./assets/splash.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#f4efe3"
+    },
+    "notification": {
+      "icon": "./assets/icon.png",
+      "color": "#17281f"
+    },
+    "backgroundColor": "#f4efe3",
+    "primaryColor": "#17281f",
+    "description": "A student-focused offline-first finance tracker for managing money across wallets, tracking income and expenses, and staying on budget.",
     "plugins": [
-      "expo-router",
+      [
+        "expo-router",
+        {
+          "headers": {
+            "Cross-Origin-Embedder-Policy": "credentialless",
+            "Cross-Origin-Opener-Policy": "same-origin"
+          }
+        }
+      ],
+      [
+        "expo-navigation-bar",
+        {
+          "visibility": "hidden",
+          "behavior": "overlay-swipe",
+          "position": "absolute",
+          "barStyle": "dark"
+        }
+      ],
       "expo-secure-store",
-      "expo-local-authentication",
-      "expo-sqlite"
+      [
+        "expo-local-authentication",
+        {
+          "faceIDPermission": "Allow $(PRODUCT_NAME) to use Face ID to unlock your finance data."
+        }
+      ],
+      "expo-sqlite",
+      "expo-web-browser",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Allow $(PRODUCT_NAME) to access your photos to attach receipt images to transactions.",
+          "cameraPermission": "Allow $(PRODUCT_NAME) to use your camera to capture receipt images for transactions."
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true
     },
     "android": {
-      "package": "com.studentfinance.app"
+      "package": "com.studentfinance.app",
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#f4efe3"
+      }
     },
     "ios": {
       "bundleIdentifier": "com.studentfinance.app"

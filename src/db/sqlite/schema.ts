@@ -6,6 +6,7 @@ export const sqliteSchema = `
     type text not null,
     initial_balance real not null default 0,
     currency text not null default 'PHP',
+    is_spendable integer not null default 1,
     is_archived integer not null default 0,
     deleted_at text,
     created_at text not null,
@@ -32,9 +33,15 @@ export const sqliteSchema = `
     amount real not null,
     account_id text,
     to_account_id text,
+    savings_goal_id text,
+    from_savings_goal_id text,
     category_id text,
     notes text,
     transaction_at text not null,
+    photo_url text,
+    location_name text,
+    latitude real,
+    longitude real,
     is_lazy_entry integer not null default 0,
     is_impulse integer not null default 0,
     deleted_at text,
@@ -74,6 +81,23 @@ export const sqliteSchema = `
     type text not null,
     reminder_time text not null,
     is_enabled integer not null default 1,
+    created_at text not null,
+    updated_at text not null
+  );
+
+  create table if not exists debts (
+    id text primary key not null,
+    user_id text not null,
+    name text not null,
+    debt_type text not null default 'borrowed',
+    total_amount real not null default 0,
+    paid_amount real not null default 0,
+    status text not null default 'pending',
+    linked_transaction_id text,
+    account_id text,
+    due_date text,
+    notes text,
+    deleted_at text,
     created_at text not null,
     updated_at text not null
   );

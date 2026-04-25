@@ -9,7 +9,8 @@
       ]
     },
     "types": [
-      "expo-router/types"
+      "expo-router/types",
+      "jest"
     ]
   },
   "include": [

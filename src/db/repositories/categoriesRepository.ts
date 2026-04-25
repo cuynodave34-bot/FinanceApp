@@ -166,6 +166,7 @@ export async function deleteCategory(id: string, userId: string) {
   await enqueueSyncItem(
     buildSyncQueueItem(userId, 'categories', id, 'delete', {
       id,
+      userId,
       deletedAt,
     })
   );
@@ -173,16 +174,16 @@ export async function deleteCategory(id: string, userId: string) {
 
 export async function seedDefaultCategoriesIfNeeded(userId: string) {
   const database = getDatabase();
-  const existing = await database.getFirstAsync<{ total: number }>(
-    `select count(1) as total from categories where user_id = ? and deleted_at is null`,
-    [userId]
-  );
-
-  if (existing?.total) {
-    return;
-  }
 
   for (const seed of defaultCategorySeeds) {
+    const existing = await database.getFirstAsync<{ id: string }>(
+      `select id from categories where user_id = ? and name = ? and deleted_at is null`,
+      [userId, seed.name]
+    );
+
+    if (existing) continue;
+
+
     const parent: Category = {
       id: createId(),
       userId,

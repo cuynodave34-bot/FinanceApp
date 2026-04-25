@@ -1,11 +1,18 @@
+import * as NavigationBar from 'expo-navigation-bar';
 import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect, useState } from 'react';
-import { ActivityIndicator, View } from 'react-native';
+import { ActivityIndicator, Platform, View } from 'react-native';
+import { SafeAreaProvider, initialWindowMetrics } from 'react-native-safe-area-context';
 
 import { useAuth, AuthProvider } from '@/features/auth/provider/AuthProvider';
+import { AppLockGate } from '@/features/preferences/components/AppLockGate';
+import { AppPreferencesProvider } from '@/features/preferences/provider/AppPreferencesProvider';
+import { ReminderScheduleBootstrap } from '@/services/reminders/ReminderScheduleBootstrap';
+import { SyncProvider } from '@/sync/provider/SyncProvider';
 import { initializeDatabase } from '@/db/sqlite/client';
 import { colors } from '@/shared/theme/colors';
+import { ErrorBoundary } from '@/shared/ui/ErrorBoundary';
 
 export default function RootLayout() {
   const [ready, setReady] = useState(false);
@@ -28,14 +35,28 @@ export default function RootLayout() {
     };
   }, []);
 
+  useEffect(() => {
+    if (Platform.OS !== 'android') {
+      return;
+    }
+
+    NavigationBar.setPositionAsync('absolute').catch(() => {});
+    NavigationBar.setBehaviorAsync('overlay-swipe').catch(() => {});
+    NavigationBar.setVisibilityAsync('hidden').catch(() => {});
+  }, []);
+
   if (!ready) {
     return <BootSplash />;
   }
 
   return (
-    <AuthProvider>
-      <RootNavigator />
-    </AuthProvider>
+    <SafeAreaProvider initialMetrics={initialWindowMetrics}>
+      <ErrorBoundary>
+        <AuthProvider>
+          <RootNavigator />
+        </AuthProvider>
+      </ErrorBoundary>
+    </SafeAreaProvider>
   );
 }
 
@@ -48,10 +69,23 @@ function RootNavigator() {
 
   return (
     <>
-      <StatusBar style="dark" />
-      <Stack screenOptions={{ headerShown: false }}>
-        {session ? <Stack.Screen name="(tabs)" /> : <Stack.Screen name="(auth)" />}
-      </Stack>
+      <StatusBar hidden animated />
+      {session ? (
+        <AppPreferencesProvider userId={session.user.id}>
+          <SyncProvider>
+            <ReminderScheduleBootstrap userId={session.user.id} />
+            <AppLockGate>
+              <Stack screenOptions={{ headerShown: false }}>
+                <Stack.Screen name="(tabs)" />
+              </Stack>
+            </AppLockGate>
+          </SyncProvider>
+        </AppPreferencesProvider>
+      ) : (
+        <Stack screenOptions={{ headerShown: false }}>
+          <Stack.Screen name="(auth)" />
+        </Stack>
+      )}
     </>
   );
 }
@@ -66,7 +100,7 @@ function BootSplash() {
         justifyContent: 'center',
       }}
     >
-      <StatusBar style="dark" />
+      <StatusBar hidden animated />
       <ActivityIndicator color={colors.ink} size="large" />
     </View>
   );

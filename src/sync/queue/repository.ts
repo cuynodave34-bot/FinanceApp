@@ -34,7 +34,7 @@ export async function enqueueSyncItem(item: SyncQueueItem) {
   );
 }
 
-export async function getPendingSyncItems(limit = 50) {
+export async function getPendingSyncItems(userId: string, limit = 50) {
   const database = getDatabase();
 
   return database.getAllAsync<SyncQueueItem>(
@@ -51,9 +51,56 @@ export async function getPendingSyncItems(limit = 50) {
       created_at as createdAt,
       updated_at as updatedAt
     from sync_queue
-    where status in ('pending', 'failed')
+    where user_id = ? and status in ('pending', 'failed')
     order by created_at asc
     limit ?`,
-    [limit]
+    [userId, limit]
+  );
+}
+
+export async function updateSyncItemStatus(
+  id: string,
+  status: SyncQueueItem['status'],
+  options?: { lastError?: string | null; incrementAttempt?: boolean }
+) {
+  const database = getDatabase();
+  const lastError = options?.lastError;
+  const hasError = lastError !== undefined && lastError !== null;
+  const attemptClause = options?.incrementAttempt ? ', attempt_count = attempt_count + 1' : '';
+
+  await database.runAsync(
+    `update sync_queue
+     set status = ?, updated_at = ?${hasError ? ', last_error = ?' : ''}${attemptClause}
+     where id = ?`,
+    hasError
+      ? [status, new Date().toISOString(), lastError, id]
+      : [status, new Date().toISOString(), id]
+  );
+}
+
+export async function getPendingSyncItemCount(userId: string) {
+  const database = getDatabase();
+  const row = await database.getFirstAsync<{ count: number }>(
+    `select count(1) as count from sync_queue where user_id = ? and status in ('pending', 'failed')`,
+    [userId]
+  );
+  return row?.count ?? 0;
+}
+
+export async function deleteSyncedItemsOlderThan(cutoffIso: string) {
+  const database = getDatabase();
+  await database.runAsync(
+    `delete from sync_queue where status = 'synced' and updated_at < ?`,
+    [cutoffIso]
+  );
+}
+
+export async function resetFailedSyncItemAttempts() {
+  const database = getDatabase();
+  await database.runAsync(
+    `update sync_queue
+     set attempt_count = 0, status = 'pending', last_error = null, updated_at = ?
+     where status = 'failed'`,
+    [new Date().toISOString()]
   );
 }

@@ -23,12 +23,13 @@ create table if not exists public.profiles (
 );
 
 create table if not exists public.accounts (
-  id uuid primary key default gen_random_uuid(),
+  id text primary key,
   user_id uuid not null references auth.users(id) on delete cascade,
   name text not null,
   type public.account_type not null default 'other',
   initial_balance numeric(14,2) not null default 0,
   currency text not null default 'PHP',
+  is_spendable boolean not null default true,
   is_archived boolean not null default false,
   deleted_at timestamptz,
   created_at timestamptz not null default timezone('utc', now()),
@@ -36,11 +37,11 @@ create table if not exists public.accounts (
 );
 
 create table if not exists public.categories (
-  id uuid primary key default gen_random_uuid(),
+  id text primary key,
   user_id uuid not null references auth.users(id) on delete cascade,
   name text not null,
   type public.category_type not null default 'expense',
-  parent_category_id uuid references public.categories(id) on delete set null,
+  parent_category_id text references public.categories(id) on delete set null,
   icon text,
   color text,
   deleted_at timestamptz,
@@ -50,13 +51,15 @@ create table if not exists public.categories (
 );
 
 create table if not exists public.transactions (
-  id uuid primary key default gen_random_uuid(),
+  id text primary key,
   user_id uuid not null references auth.users(id) on delete cascade,
   type public.transaction_type not null,
   amount numeric(14,2) not null check (amount >= 0),
-  account_id uuid references public.accounts(id) on delete set null,
-  to_account_id uuid references public.accounts(id) on delete set null,
-  category_id uuid references public.categories(id) on delete set null,
+  account_id text references public.accounts(id) on delete set null,
+  to_account_id text references public.accounts(id) on delete set null,
+  savings_goal_id text references public.savings_goals(id) on delete set null,
+  from_savings_goal_id text references public.savings_goals(id) on delete set null,
+  category_id text references public.categories(id) on delete set null,
   notes text,
   transaction_at timestamptz not null,
   photo_url text,
@@ -69,14 +72,14 @@ create table if not exists public.transactions (
   created_at timestamptz not null default timezone('utc', now()),
   updated_at timestamptz not null default timezone('utc', now()),
   constraint transfer_requires_target check (
-    (type = 'transfer' and to_account_id is not null and account_id is not null)
+    (type = 'transfer' and (to_account_id is not null or savings_goal_id is not null) and (account_id is not null or from_savings_goal_id is not null))
     or
-    (type <> 'transfer' and to_account_id is null)
+    (type <> 'transfer' and to_account_id is null and savings_goal_id is null and from_savings_goal_id is null)
   )
 );
 
 create table if not exists public.budgets (
-  id uuid primary key default gen_random_uuid(),
+  id text primary key,
   user_id uuid not null references auth.users(id) on delete cascade,
   budget_date date not null,
   budget_amount numeric(14,2) not null default 0,
@@ -90,12 +93,12 @@ create table if not exists public.budgets (
 );
 
 create table if not exists public.savings_goals (
-  id uuid primary key default gen_random_uuid(),
+  id text primary key,
   user_id uuid not null references auth.users(id) on delete cascade,
   name text not null,
   target_amount numeric(14,2),
   current_amount numeric(14,2) not null default 0,
-  account_id uuid references public.accounts(id) on delete set null,
+  account_id text references public.accounts(id) on delete set null,
   is_general_savings boolean not null default false,
   deleted_at timestamptz,
   created_at timestamptz not null default timezone('utc', now()),
@@ -103,9 +106,9 @@ create table if not exists public.savings_goals (
 );
 
 create table if not exists public.balance_adjustments (
-  id uuid primary key default gen_random_uuid(),
+  id text primary key,
   user_id uuid not null references auth.users(id) on delete cascade,
-  account_id uuid not null references public.accounts(id) on delete cascade,
+  account_id text not null references public.accounts(id) on delete cascade,
   old_balance numeric(14,2) not null,
   new_balance numeric(14,2) not null,
   reason text,
@@ -113,7 +116,7 @@ create table if not exists public.balance_adjustments (
 );
 
 create table if not exists public.reminders (
-  id uuid primary key default gen_random_uuid(),
+  id text primary key,
   user_id uuid not null references auth.users(id) on delete cascade,
   type text not null,
   reminder_time time not null,
@@ -172,6 +175,27 @@ create trigger savings_goals_set_updated_at
 before update on public.savings_goals
 for each row execute function public.handle_updated_at();
 
+create table if not exists public.debts (
+  id text primary key,
+  user_id uuid not null references auth.users(id) on delete cascade,
+  name text not null,
+  debt_type text not null default 'borrowed',
+  total_amount numeric(14,2) not null default 0,
+  paid_amount numeric(14,2) not null default 0,
+  status text not null default 'pending',
+  linked_transaction_id text references public.transactions(id) on delete set null,
+  account_id text references public.accounts(id) on delete set null,
+  due_date date,
+  notes text,
+  deleted_at timestamptz,
+  created_at timestamptz not null default timezone('utc', now()),
+  updated_at timestamptz not null default timezone('utc', now())
+);
+
+create trigger debts_set_updated_at
+before update on public.debts
+for each row execute function public.handle_updated_at();
+
 create trigger reminders_set_updated_at
 before update on public.reminders
 for each row execute function public.handle_updated_at();
@@ -225,6 +249,13 @@ with check (auth.uid() = user_id);
 
 create policy "balance_adjustments_manage_own"
 on public.balance_adjustments for all
+using (auth.uid() = user_id)
+with check (auth.uid() = user_id);
+
+alter table public.debts enable row level security;
+
+create policy "debts_manage_own"
+on public.debts for all
 using (auth.uid() = user_id)
 with check (auth.uid() = user_id);
 

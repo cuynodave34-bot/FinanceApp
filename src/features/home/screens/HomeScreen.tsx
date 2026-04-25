@@ -1,83 +1,115 @@
 import { useFocusEffect, useRouter } from 'expo-router';
 import { useCallback, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
+
+import { useSync } from '@/sync/provider/SyncProvider';
 
 import { listAccountsByUser } from '@/db/repositories/accountsRepository';
+import { listBudgetsByUser } from '@/db/repositories/budgetsRepository';
+import { listSavingsGoalsByUser } from '@/db/repositories/savingsGoalsRepository';
 import {
   listTransactionsByUser,
   TransactionFeedItem,
 } from '@/db/repositories/transactionsRepository';
 import { useAuth } from '@/features/auth/provider/AuthProvider';
+import { useAppPreferences } from '@/features/preferences/provider/AppPreferencesProvider';
 import { homeDashboardPreview } from '@/features/home/data/home-dashboard';
 import { calculateSpendableBalance } from '@/services/balances/calculateSpendableBalance';
-import { colors } from '@/shared/theme/colors';
-import { Account } from '@/shared/types/domain';
 import {
+  calculateBudgetSummaries,
+  calculatePendingBudgetReserve,
+  getBudgetSummaryForDate,
+} from '@/services/budgets/calculateBudgetSummaries';
+import { colors, shadows, spacing, radii } from '@/shared/theme/colors';
+import { Account, SavingsGoal } from '@/shared/types/domain';
+import {
+  formatDateKey,
   formatMoney,
+  maskFinancialValue,
   formatSignedMoney,
   formatTransactionDate,
 } from '@/shared/utils/format';
-import { SectionCard } from '@/shared/ui/SectionCard';
-import { StatCard } from '@/shared/ui/StatCard';
+import { toDateKey } from '@/shared/utils/time';
+import { BalanceConfirmationPrompt } from '@/features/home/components/BalanceConfirmationPrompt';
+import { DailyCheckIn } from '@/features/home/components/DailyCheckIn';
+import { SyncStatusBadge } from '@/features/home/components/SyncStatusBadge';
+import { calculateStreaks } from '@/services/streaks/calculateStreaks';
 
-const accountCardTones = ['sun', 'mint', 'sand', 'ink'] as const;
+const accountCardTones = ['purple', 'blue', 'teal', 'amber', 'rose', 'slate'] as const;
+
+const quickActions = [
+  { label: 'Add Money', icon: 'add-circle-outline' as const, route: '/transactions' },
+  { label: 'Transfer', icon: 'swap-horizontal-outline' as const, route: '/transactions' },
+  { label: 'Pay Bills', icon: 'card-outline' as const, route: '/transactions' },
+  { label: 'Fixed Deposits', icon: 'lock-closed-outline' as const, route: '/goals' },
+];
 
 export function HomeScreen() {
   const router = useRouter();
   const { user } = useAuth();
+  const { status: syncStatus, pendingCount, lastError } = useSync();
+  const { balancesHidden, preferencesLoading, toggleBalancesHidden } = useAppPreferences();
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [transactions, setTransactions] = useState<TransactionFeedItem[]>([]);
+  const [budgetSummaries, setBudgetSummaries] = useState(
+    calculateBudgetSummaries({ budgets: [], transactions: [], today: toDateKey(new Date()) })
+  );
+  const [savingsGoals, setSavingsGoals] = useState<SavingsGoal[]>([]);
+  const [totalSavings, setTotalSavings] = useState(0);
 
   useFocusEffect(
     useCallback(() => {
-      if (!user) {
-        return;
-      }
-
+      console.log('[Dashboard] Focused — user:', user?.id ?? 'none', '| sync:', syncStatus, '| pending:', pendingCount, '| lastError:', lastError ?? 'none');
+      if (!user) return;
       Promise.all([
         listAccountsByUser(user.id),
-        listTransactionsByUser(user.id, 20),
+        listTransactionsByUser(user.id),
+        listBudgetsByUser(user.id),
+        listSavingsGoalsByUser(user.id),
       ])
-        .then(([accountRows, transactionRows]) => {
+        .then(([accountRows, transactionRows, budgetRows, goalRows]) => {
+          const today = toDateKey(new Date());
           setAccounts(accountRows.filter((account) => !account.isArchived));
           setTransactions(transactionRows);
+          setBudgetSummaries(
+            calculateBudgetSummaries({ budgets: budgetRows, transactions: transactionRows, today })
+          );
+          setSavingsGoals(goalRows);
+          const nonSpendable = accountRows
+            .filter((a) => !a.isArchived && !a.isSpendable)
+            .reduce((sum, a) => {
+              const txSum = transactionRows.reduce((tSum, tx) => {
+                if (tx.type === 'income' && tx.accountId === a.id) return tSum + tx.amount;
+                if (tx.type === 'expense' && tx.accountId === a.id) return tSum - tx.amount;
+                if (tx.type === 'transfer' && tx.accountId === a.id) return tSum - tx.amount;
+                if (tx.type === 'transfer' && tx.toAccountId === a.id) return tSum + tx.amount;
+                return tSum;
+              }, 0);
+              return sum + a.initialBalance + txSum;
+            }, 0);
+          setTotalSavings(nonSpendable + goalRows.reduce((sum, g) => sum + g.currentAmount, 0));
         })
-        .catch((error) => {
-          console.warn('Failed to load home data', error);
-        });
+        .catch((error) => console.warn('Failed to load home data', error));
     }, [user])
   );
 
+  const todayDateKey = toDateKey(new Date());
   const accountBalances = new Map(accounts.map((account) => [account.id, account.initialBalance]));
 
   for (const transaction of transactions) {
     if (transaction.type === 'income' && transaction.accountId) {
-      accountBalances.set(
-        transaction.accountId,
-        (accountBalances.get(transaction.accountId) ?? 0) + transaction.amount
-      );
+      accountBalances.set(transaction.accountId, (accountBalances.get(transaction.accountId) ?? 0) + transaction.amount);
     }
-
     if (transaction.type === 'expense' && transaction.accountId) {
-      accountBalances.set(
-        transaction.accountId,
-        (accountBalances.get(transaction.accountId) ?? 0) - transaction.amount
-      );
+      accountBalances.set(transaction.accountId, (accountBalances.get(transaction.accountId) ?? 0) - transaction.amount);
     }
-
     if (transaction.type === 'transfer') {
       if (transaction.accountId) {
-        accountBalances.set(
-          transaction.accountId,
-          (accountBalances.get(transaction.accountId) ?? 0) - transaction.amount
-        );
+        accountBalances.set(transaction.accountId, (accountBalances.get(transaction.accountId) ?? 0) - transaction.amount);
       }
-
       if (transaction.toAccountId) {
-        accountBalances.set(
-          transaction.toAccountId,
-          (accountBalances.get(transaction.toAccountId) ?? 0) + transaction.amount
-        );
+        accountBalances.set(transaction.toAccountId, (accountBalances.get(transaction.toAccountId) ?? 0) + transaction.amount);
       }
     }
   }
@@ -86,298 +118,329 @@ export function HomeScreen() {
     (sum, account) => sum + (accountBalances.get(account.id) ?? account.initialBalance),
     0
   );
+  const spendableTotal = accounts
+    .filter((a) => a.isSpendable)
+    .reduce((sum, account) => sum + (accountBalances.get(account.id) ?? account.initialBalance), 0);
+  const todayBudgetSummary = getBudgetSummaryForDate(budgetSummaries, todayDateKey);
+  const pendingBudgetReserve = calculatePendingBudgetReserve(budgetSummaries, todayDateKey);
+  const savingsTotal = savingsGoals.reduce((sum, g) => sum + g.currentAmount, 0);
   const spendableBalance = calculateSpendableBalance({
-    totalBalance,
-    reservedSavings: 0,
+    totalBalance: spendableTotal,
+    reservedSavings: savingsTotal,
     upcomingPlannedExpenses: 0,
-    budgetReserves: 0,
+    budgetReserves: pendingBudgetReserve,
   });
-  const accountCards = accounts.length
-    ? accounts.map((account, index) => ({
-        id: account.id,
-        name: account.name,
-        balance: formatMoney(
-          accountBalances.get(account.id) ?? account.initialBalance,
-          account.currency
-        ),
-        tone: accountCardTones[index % accountCardTones.length],
-      }))
-    : homeDashboardPreview.accounts;
+  const accountCards = accounts.map((account, index) => ({
+    id: account.id,
+    name: account.name,
+    balance: formatMoney(accountBalances.get(account.id) ?? account.initialBalance, account.currency),
+    tone: accountCardTones[index % accountCardTones.length],
+  }));
   const recentTransactions = transactions.filter((transaction) => !transaction.isLazyEntry);
   const lazyEntries = transactions.filter((transaction) => transaction.isLazyEntry);
+  const recentPreview = recentTransactions.slice(0, 5);
+  const budgetTodayLabel = todayBudgetSummary ? formatMoney(todayBudgetSummary.availableToSpend) : homeDashboardPreview.todaysBudget;
+  const spentTodayLabel = todayBudgetSummary ? formatMoney(todayBudgetSummary.spentAmount) : homeDashboardPreview.spentToday;
+  const remainingTodayLabel = todayBudgetSummary ? formatMoney(todayBudgetSummary.remainingAmount) : homeDashboardPreview.remainingToday;
 
   return (
-    <ScrollView
-      style={styles.screen}
-      contentContainerStyle={styles.content}
-      showsVerticalScrollIndicator={false}
-    >
-      <View style={styles.hero}>
-        <Text style={styles.kicker}>
-          {accounts.length ? 'Local balances are live' : homeDashboardPreview.syncStatus}
-        </Text>
-        <Text style={styles.title}>{homeDashboardPreview.greeting}</Text>
-        <Text style={styles.subtitle}>
-          Student-first dashboard for balances, budget pressure, quick logging,
-          and incomplete entries.
-        </Text>
+    <ScrollView style={styles.screen} contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+      {/* Header */}
+      <View style={styles.headerRow}>
+        <View>
+          <Text style={styles.greeting}>
+            {'Greetings! '}
+            {typeof user?.user_metadata?.display_name === 'string'
+              ? user.user_metadata.display_name
+              : user?.email ?? 'Guest'}
+          </Text>
+        </View>
+        <Pressable style={styles.iconButton}>
+          <Ionicons name="notifications-outline" size={22} color={colors.ink} />
+        </Pressable>
       </View>
 
+      {/* Balance Card */}
+      <View style={[styles.balanceCard, shadows.medium]}>
+        <View style={styles.balanceHeader}>
+          <Text style={styles.balanceLabel}>Current Balance</Text>
+          <Pressable onPress={() => toggleBalancesHidden()}>
+            <Ionicons name={balancesHidden ? 'eye-off-outline' : 'eye-outline'} size={18} color="rgba(255,255,255,0.8)" />
+          </Pressable>
+        </View>
+        <Text style={styles.balanceValue}>
+          {maskFinancialValue(formatMoney(totalBalance), balancesHidden)}
+        </Text>
+        <View style={styles.balanceMeta}>
+          <SyncStatusBadge />
+        </View>
+      </View>
+
+      {/* Quick Actions */}
+      <View style={styles.actionsRow}>
+        {quickActions.map((action) => (
+          <Pressable
+            key={action.label}
+            onPress={() => router.push(action.route as any)}
+            style={styles.actionItem}
+          >
+            <View style={styles.actionIconCircle}>
+              <Ionicons name={action.icon} size={22} color={colors.primary} />
+            </View>
+            <Text style={styles.actionLabel}>{action.label}</Text>
+          </Pressable>
+        ))}
+      </View>
+
+      {/* AI Assistant Banner */}
+      <Pressable onPress={() => router.push('/ai')} style={[styles.aiBanner, shadows.small]}>
+        <View style={styles.aiBannerIcon}>
+          <Ionicons name="sparkles" size={20} color={colors.primary} />
+        </View>
+        <View style={styles.aiBannerText}>
+          <Text style={styles.aiBannerTitle}>Ask Penny</Text>
+          <Text style={styles.aiBannerSubtitle}>Chat with your AI financial assistant</Text>
+        </View>
+        <Ionicons name="chevron-forward" size={18} color={colors.mutedInk} />
+      </Pressable>
+
+      <DailyCheckIn />
+
+      <BalanceConfirmationPrompt
+        userId={user?.id ?? ''}
+        accounts={accounts}
+        balances={accountBalances}
+        onAdjust={() => {
+          if (!user) return;
+          Promise.all([
+            listAccountsByUser(user.id),
+            listTransactionsByUser(user.id),
+            listBudgetsByUser(user.id),
+            listSavingsGoalsByUser(user.id),
+          ])
+            .then(([accountRows, transactionRows, budgetRows, goalRows]) => {
+              const today = toDateKey(new Date());
+              setAccounts(accountRows.filter((account) => !account.isArchived));
+              setTransactions(transactionRows);
+              setBudgetSummaries(calculateBudgetSummaries({ budgets: budgetRows, transactions: transactionRows, today }));
+              const nonSpendable = accountRows
+                .filter((a) => !a.isArchived && !a.isSpendable)
+                .reduce((sum, a) => {
+                  const txSum = transactionRows.reduce((tSum, tx) => {
+                    if (tx.type === 'income' && tx.accountId === a.id) return tSum + tx.amount;
+                    if (tx.type === 'expense' && tx.accountId === a.id) return tSum - tx.amount;
+                    if (tx.type === 'transfer' && tx.accountId === a.id) return tSum - tx.amount;
+                    if (tx.type === 'transfer' && tx.toAccountId === a.id) return tSum + tx.amount;
+                    return tSum;
+                  }, 0);
+                  return sum + a.initialBalance + txSum;
+                }, 0);
+              setTotalSavings(nonSpendable + goalRows.reduce((sum, g) => sum + g.currentAmount, 0));
+            })
+            .catch((error) => console.warn('Failed to reload after balance adjustment', error));
+        }}
+      />
+
+      {(() => {
+        const { loggingStreak, noSpendStreak } = calculateStreaks(transactions);
+        if (loggingStreak === 0 && noSpendStreak === 0) return null;
+        return (
+          <View style={styles.streakRow}>
+            {loggingStreak > 0 ? (
+              <View style={[styles.streakChip, { backgroundColor: colors.successLight }]}>
+                <Ionicons name="flame" size={14} color={colors.success} />
+                <Text style={[styles.streakLabel, { color: colors.success }]}>{loggingStreak} day streak</Text>
+              </View>
+            ) : null}
+            {noSpendStreak > 0 ? (
+              <View style={[styles.streakChip, { backgroundColor: colors.warningLight }]}>
+                <Ionicons name="leaf" size={14} color={colors.warning} />
+                <Text style={[styles.streakLabel, { color: colors.warning }]}>{noSpendStreak} day no-spend</Text>
+              </View>
+            ) : null}
+          </View>
+        );
+      })()}
+
+      {/* Stat Grid */}
       <View style={styles.statGrid}>
-        <StatCard label="Total Balance" value={formatMoney(totalBalance)} accent="mint" />
-        <StatCard
-          label="Safe To Spend"
-          value={formatMoney(spendableBalance)}
-          accent="sun"
-        />
-        <StatCard label="Savings" value="PHP 0.00" accent="ink" />
-        <StatCard
-          label="Today Left"
-          value={accounts.length ? 'Needs budget' : homeDashboardPreview.remainingToday}
-          accent="sand"
-        />
+        <StatBox label="Safe to Spend" value={maskFinancialValue(formatMoney(spendableBalance), balancesHidden)} accent="success" />
+        <StatBox label="Savings" value={maskFinancialValue(formatMoney(totalSavings), balancesHidden)} accent="info" />
+        <StatBox label="Today's Budget" value={maskFinancialValue(budgetTodayLabel, balancesHidden)} accent="warning" />
+        <StatBox label="Spent Today" value={maskFinancialValue(spentTodayLabel, balancesHidden)} accent="danger" />
       </View>
 
-      <SectionCard
-        title="Wallets"
-        subtitle="Multi-account balance cards stay visible on the home screen."
-      >
-        <View style={styles.accountGrid}>
-          {accountCards.map((account) => (
-            <View
-              key={account.id}
-              style={[
-                styles.accountCard,
-                {
-                  backgroundColor: colors.accountCard[account.tone],
-                },
-              ]}
-            >
-              <Text style={styles.accountName}>{account.name}</Text>
-              <Text style={styles.accountBalance}>{account.balance}</Text>
-            </View>
-          ))}
+      {/* My Accounts */}
+      <View>
+        <View style={styles.sectionHeader}>
+          <Text style={styles.sectionTitle}>My Accounts</Text>
+          <Pressable onPress={() => router.push('/accounts' as any)}>
+            <Text style={styles.sectionLink}>View All</Text>
+          </Pressable>
         </View>
-      </SectionCard>
+        {accountCards.length === 0 ? (
+          <Text style={styles.emptyText}>No accounts yet. Add one in Accounts.</Text>
+        ) : (
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.cardsScroll}>
+            {accountCards.map((account) => (
+              <View key={account.id} style={[styles.accountCard, { backgroundColor: colors.accountCard[account.tone as keyof typeof colors.accountCard] ?? colors.accountCard.purple }]}>
+                <Text style={styles.accountCardName}>{account.name}</Text>
+                <Text style={styles.accountCardBalance}>{maskFinancialValue(account.balance, balancesHidden)}</Text>
+              </View>
+            ))}
+          </ScrollView>
+        )}
+      </View>
 
-      <SectionCard
-        title="Quick Add"
-        subtitle="Jump straight into the working transaction flow from the dashboard."
-      >
-        <View style={styles.actionRow}>
-          {homeDashboardPreview.quickActions.map((item) => (
-            <Pressable
-              key={item}
-              onPress={() => router.push('/transactions')}
-              style={styles.actionChip}
-            >
-              <Text style={styles.actionLabel}>{item}</Text>
+      {/* Recent Transactions */}
+      <View>
+        <View style={styles.sectionHeader}>
+          <Text style={styles.sectionTitle}>Recent Transactions</Text>
+          <Pressable onPress={() => router.push('/transactions')}>
+            <Text style={styles.sectionLink}>View All</Text>
+          </Pressable>
+        </View>
+        <View style={[styles.transactionsCard, shadows.small]}>
+          {recentTransactions.length === 0 ? (
+            <Text style={styles.emptyText}>No transactions recorded yet.</Text>
+          ) : (
+            recentPreview.map((transaction) => (
+              <View key={transaction.id} style={styles.txRow}>
+                <View style={[styles.txIcon, { backgroundColor: transaction.type === 'income' ? colors.successLight : transaction.type === 'expense' ? colors.dangerLight : colors.surfaceSecondary }]}>
+                  <Ionicons
+                    name={transaction.type === 'income' ? 'arrow-down' : transaction.type === 'expense' ? 'arrow-up' : 'swap-horizontal'}
+                    size={16}
+                    color={transaction.type === 'income' ? colors.success : transaction.type === 'expense' ? colors.danger : colors.secondaryText}
+                  />
+                </View>
+                <View style={styles.txCopy}>
+                  <Text style={styles.txTitle}>{transaction.notes?.trim() || defaultTransactionTitle(transaction)}</Text>
+                  <Text style={styles.txMeta}>{buildTransactionMeta(transaction)}</Text>
+                </View>
+                <Text style={[styles.txValue, transaction.type === 'income' ? styles.incomeText : transaction.type === 'expense' ? styles.expenseText : null]}>
+                  {maskFinancialValue(formatTransactionAmount(transaction), balancesHidden)}
+                </Text>
+              </View>
+            ))
+          )}
+        </View>
+      </View>
+
+      {/* Incomplete Entries */}
+      {lazyEntries.length > 0 ? (
+        <View>
+          <View style={styles.sectionHeader}>
+            <Text style={styles.sectionTitle}>Incomplete Entries</Text>
+            <Pressable onPress={() => router.push('/transactions')}>
+              <Text style={styles.sectionLink}>Complete</Text>
             </Pressable>
-          ))}
-        </View>
-      </SectionCard>
-
-      <SectionCard
-        title="Budget Snapshot"
-        subtitle="Daily budget and carry-over logic will plug into this panel next."
-      >
-        <View style={styles.listRow}>
-          <Text style={styles.listLabel}>Budget today</Text>
-          <Text style={styles.listValue}>{homeDashboardPreview.todaysBudget}</Text>
-        </View>
-        <View style={styles.listRow}>
-          <Text style={styles.listLabel}>Spent today</Text>
-          <Text style={styles.listValue}>{homeDashboardPreview.spentToday}</Text>
-        </View>
-        <View style={styles.listRow}>
-          <Text style={styles.listLabel}>Remaining</Text>
-          <Text style={styles.listValue}>{homeDashboardPreview.remainingToday}</Text>
-        </View>
-      </SectionCard>
-
-      <SectionCard
-        title="Recent Transactions"
-        subtitle="Income, expenses, and transfers now come from the local ledger."
-      >
-        {recentTransactions.length === 0 ? (
-          <Text style={styles.emptyText}>No transactions recorded yet.</Text>
-        ) : (
-          recentTransactions.slice(0, 5).map((transaction) => (
-            <View key={transaction.id} style={styles.listRow}>
-              <View style={styles.listCopy}>
-                <Text style={styles.listLabel}>
-                  {transaction.notes?.trim() || defaultTransactionTitle(transaction)}
-                </Text>
-                <Text style={styles.listMeta}>{buildTransactionMeta(transaction)}</Text>
-                <Text style={styles.listMeta}>
-                  {formatTransactionDate(transaction.transactionAt)}
-                </Text>
+          </View>
+          <View style={[styles.transactionsCard, shadows.small]}>
+            {lazyEntries.slice(0, 3).map((transaction) => (
+              <View key={transaction.id} style={styles.txRow}>
+                <View style={[styles.txIcon, { backgroundColor: colors.warningLight }]}>
+                  <Ionicons name="time-outline" size={16} color={colors.warning} />
+                </View>
+                <View style={styles.txCopy}>
+                  <Text style={styles.txTitle}>Incomplete entry</Text>
+                  <Text style={styles.txMeta}>{formatTransactionDate(transaction.transactionAt)}</Text>
+                </View>
+                <Text style={styles.txValue}>{maskFinancialValue(formatMoney(transaction.amount), balancesHidden)}</Text>
               </View>
-              <Text style={styles.listValue}>{formatTransactionAmount(transaction)}</Text>
-            </View>
-          ))
-        )}
-      </SectionCard>
-
-      <SectionCard
-        title="Incomplete Entries"
-        subtitle="Lazy mode placeholders are tracked so they can be completed later."
-      >
-        {lazyEntries.length === 0 ? (
-          <Text style={styles.emptyText}>No incomplete entries yet.</Text>
-        ) : (
-          lazyEntries.map((transaction) => (
-            <View key={transaction.id} style={styles.listRow}>
-              <View style={styles.listCopy}>
-                <Text style={styles.listLabel}>{formatMoney(transaction.amount)}</Text>
-                <Text style={styles.listMeta}>
-                  {formatTransactionDate(transaction.transactionAt)}
-                </Text>
-              </View>
-              <Text style={styles.listValue}>Complete later</Text>
-            </View>
-          ))
-        )}
-      </SectionCard>
+            ))}
+          </View>
+        </View>
+      ) : null}
     </ScrollView>
   );
 }
 
-function defaultTransactionTitle(transaction: TransactionFeedItem) {
-  if (transaction.type === 'transfer') {
-    return 'Transfer';
-  }
+function StatBox({ label, value, accent }: { label: string; value: string; accent: 'success' | 'warning' | 'danger' | 'info' }) {
+  const accentColors = {
+    success: { bg: colors.successLight, text: colors.success },
+    warning: { bg: colors.warningLight, text: colors.warning },
+    danger: { bg: colors.dangerLight, text: colors.danger },
+    info: { bg: colors.infoLight, text: colors.info },
+  };
+  const { bg, text } = accentColors[accent];
+  return (
+    <View style={[styles.statBox, { backgroundColor: bg }]}>
+      <Text style={[styles.statLabel, { color: text }]}>{label}</Text>
+      <Text style={[styles.statValue, { color: text }]}>{value}</Text>
+    </View>
+  );
+}
 
+function defaultTransactionTitle(transaction: TransactionFeedItem) {
+  if (transaction.type === 'transfer') return 'Transfer';
   return `${transaction.type.slice(0, 1).toUpperCase()}${transaction.type.slice(1)}`;
 }
 
 function buildTransactionMeta(transaction: TransactionFeedItem) {
   if (transaction.type === 'transfer') {
-    return `${transaction.accountName ?? 'Unknown'} -> ${transaction.toAccountName ?? 'Unknown'}`;
+    return `${transaction.accountName ?? 'Unknown'} → ${transaction.toAccountName ?? 'Unknown'}`;
   }
-
-  return `${transaction.accountName ?? 'Unknown'} | ${transaction.categoryName ?? 'Uncategorised'}`;
+  return `${transaction.accountName ?? 'Unknown'} · ${transaction.categoryName ?? 'Uncategorised'}`;
 }
 
 function formatTransactionAmount(transaction: TransactionFeedItem) {
-  if (transaction.type === 'income') {
-    return formatSignedMoney(transaction.amount);
-  }
-
-  if (transaction.type === 'expense') {
-    return formatSignedMoney(transaction.amount * -1);
-  }
-
+  if (transaction.type === 'income') return formatSignedMoney(transaction.amount);
+  if (transaction.type === 'expense') return formatSignedMoney(transaction.amount * -1);
   return formatMoney(transaction.amount);
 }
 
 const styles = StyleSheet.create({
-  screen: {
-    flex: 1,
-    backgroundColor: colors.canvas,
-  },
-  content: {
-    paddingHorizontal: 18,
-    paddingTop: 24,
-    paddingBottom: 120,
-    gap: 16,
-  },
-  hero: {
-    backgroundColor: colors.surface,
-    borderRadius: 28,
-    padding: 22,
-    borderWidth: 1,
-    borderColor: colors.border,
-    gap: 8,
-  },
-  kicker: {
-    fontSize: 12,
-    color: colors.mutedInk,
-    textTransform: 'uppercase',
-    letterSpacing: 1.2,
-    fontWeight: '700',
-  },
-  title: {
-    fontSize: 30,
-    lineHeight: 34,
-    color: colors.ink,
-    fontWeight: '800',
-  },
-  subtitle: {
-    fontSize: 14,
-    lineHeight: 20,
-    color: colors.mutedInk,
-  },
-  statGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 12,
-  },
-  accountGrid: {
-    gap: 10,
-  },
-  accountCard: {
-    borderRadius: 20,
-    padding: 18,
-  },
-  accountName: {
-    fontSize: 14,
-    color: colors.ink,
-    marginBottom: 6,
-    fontWeight: '600',
-  },
-  accountBalance: {
-    fontSize: 24,
-    color: colors.ink,
-    fontWeight: '800',
-  },
-  actionRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 10,
-  },
-  actionChip: {
-    backgroundColor: colors.ink,
-    borderRadius: 999,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-  },
-  actionLabel: {
-    color: colors.surface,
-    fontWeight: '700',
-    fontSize: 13,
-  },
-  listRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingVertical: 10,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: colors.border,
-    gap: 12,
-  },
-  listCopy: {
-    flex: 1,
-    gap: 3,
-  },
-  listLabel: {
-    color: colors.ink,
-    fontSize: 15,
-    fontWeight: '600',
-  },
-  listMeta: {
-    color: colors.mutedInk,
-    fontSize: 12,
-    marginTop: 3,
-  },
-  listValue: {
-    color: colors.ink,
-    fontSize: 14,
-    fontWeight: '700',
-    textAlign: 'right',
-  },
-  emptyText: {
-    color: colors.mutedInk,
-    fontSize: 14,
-  },
+  screen: { flex: 1, backgroundColor: colors.canvas },
+  content: { paddingHorizontal: spacing.lg, paddingTop: spacing.lg, paddingBottom: 120, gap: spacing.lg },
+
+  headerRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  greeting: { fontSize: 28, fontWeight: '800', color: colors.ink },
+  iconButton: { width: 40, height: 40, borderRadius: 20, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border, alignItems: 'center', justifyContent: 'center' },
+
+  balanceCard: { backgroundColor: colors.primary, borderRadius: radii.xxl, padding: spacing.lg, gap: spacing.sm },
+  balanceHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  balanceLabel: { fontSize: 13, color: 'rgba(255,255,255,0.7)', fontWeight: '600' },
+  balanceValue: { fontSize: 32, fontWeight: '800', color: colors.surface },
+  balanceMeta: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
+
+  actionsRow: { flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: spacing.xs },
+  actionItem: { alignItems: 'center', gap: spacing.sm },
+  actionIconCircle: { width: 52, height: 52, borderRadius: 18, backgroundColor: colors.primaryLight, alignItems: 'center', justifyContent: 'center' },
+  actionLabel: { fontSize: 11, fontWeight: '600', color: colors.secondaryText },
+
+  aiBanner: { flexDirection: 'row', alignItems: 'center', gap: spacing.md, backgroundColor: colors.surface, borderRadius: radii.xl, padding: spacing.lg, borderWidth: 1, borderColor: colors.border },
+  aiBannerIcon: { width: 44, height: 44, borderRadius: 14, backgroundColor: colors.primaryLight, alignItems: 'center', justifyContent: 'center' },
+  aiBannerText: { flex: 1, gap: 2 },
+  aiBannerTitle: { fontSize: 15, fontWeight: '700', color: colors.ink },
+  aiBannerSubtitle: { fontSize: 13, color: colors.mutedInk },
+
+  streakRow: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
+  streakChip: { flexDirection: 'row', alignItems: 'center', gap: spacing.xs, borderRadius: radii.md, paddingHorizontal: spacing.sm, paddingVertical: 6 },
+  streakLabel: { fontSize: 12, fontWeight: '700' },
+
+  statGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.md },
+  statBox: { width: '47%', borderRadius: radii.lg, padding: spacing.md, gap: spacing.xs },
+  statLabel: { fontSize: 11, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.5 },
+  statValue: { fontSize: 16, fontWeight: '800' },
+
+  sectionHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: spacing.xs },
+  sectionTitle: { fontSize: 18, fontWeight: '700', color: colors.ink },
+  sectionLink: { fontSize: 13, fontWeight: '600', color: colors.primary },
+
+  cardsScroll: { gap: spacing.md, paddingHorizontal: spacing.xs },
+  accountCard: { width: 180, borderRadius: radii.xl, padding: spacing.lg, gap: spacing.sm, minHeight: 100, justifyContent: 'space-between' },
+  accountCardName: { fontSize: 13, fontWeight: '600', color: colors.secondaryText },
+  accountCardBalance: { fontSize: 20, fontWeight: '800', color: colors.ink },
+
+  transactionsCard: { backgroundColor: colors.surface, borderRadius: radii.xl, padding: spacing.lg, gap: spacing.md, borderWidth: 1, borderColor: colors.border },
+  txRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.md },
+  txIcon: { width: 40, height: 40, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
+  txCopy: { flex: 1, gap: 2 },
+  txTitle: { fontSize: 14, fontWeight: '600', color: colors.ink },
+  txMeta: { fontSize: 12, color: colors.mutedInk },
+  txValue: { fontSize: 14, fontWeight: '700', color: colors.ink, textAlign: 'right' },
+  incomeText: { color: colors.success },
+  expenseText: { color: colors.danger },
+
+  emptyText: { color: colors.mutedInk, fontSize: 14, textAlign: 'center' },
 });

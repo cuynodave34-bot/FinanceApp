@@ -1,67 +1,73 @@
-import { useFocusEffect } from 'expo-router';
-import { useCallback, useState } from 'react';
-import {
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Text,
-  TextInput,
-  View,
-} from 'react-native';
+import { useFocusEffect, useRouter } from 'expo-router';
+import { useCallback, useMemo, useState } from 'react';
+import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 
 import { listAccountsByUser } from '@/db/repositories/accountsRepository';
 import { listCategoriesByUser } from '@/db/repositories/categoriesRepository';
 import {
-  createTransaction,
   listTransactionsByUser,
   TransactionFeedItem,
 } from '@/db/repositories/transactionsRepository';
 import { useAuth } from '@/features/auth/provider/AuthProvider';
-import { colors } from '@/shared/theme/colors';
-import {
-  Account,
-  Category,
-  TransactionType,
-} from '@/shared/types/domain';
+import { useAppPreferences } from '@/features/preferences/provider/AppPreferencesProvider';
+import { colors, spacing, radii, shadows } from '@/shared/theme/colors';
+import { Account, Category } from '@/shared/types/domain';
 import {
   formatMoney,
   formatSignedMoney,
   formatTransactionDate,
+  maskFinancialValue,
 } from '@/shared/utils/format';
-import { SectionCard } from '@/shared/ui/SectionCard';
+import { DatePickerField } from '@/shared/ui/DateTimePickerField';
+import { isDateKey, toDateKey } from '@/shared/utils/time';
 
-const transactionTypes: TransactionType[] = ['expense', 'income', 'transfer'];
+const ledgerTypeFilters = ['all', 'expense', 'income', 'transfer'] as const;
+const entryStateFilters = ['all', 'complete', 'incomplete'] as const;
 
-const emptyDraft = {
-  type: 'expense' as TransactionType,
-  amount: '',
+type LedgerTypeFilter = (typeof ledgerTypeFilters)[number];
+type EntryStateFilter = (typeof entryStateFilters)[number];
+
+type TransactionFilters = {
+  query: string;
+  type: LedgerTypeFilter;
+  entryState: EntryStateFilter;
+  accountId: string;
+  categoryId: string;
+  fromDate: string;
+  toDate: string;
+  impulseOnly: boolean;
+};
+
+const emptyFilters: TransactionFilters = {
+  query: '',
+  type: 'all',
+  entryState: 'all',
   accountId: '',
-  toAccountId: '',
   categoryId: '',
-  notes: '',
-  isImpulse: false,
+  fromDate: '',
+  toDate: '',
+  impulseOnly: false,
 };
 
 export function TransactionsScreen() {
   const { user } = useAuth();
+  const router = useRouter();
+  const { balancesHidden, toggleBalancesHidden } = useAppPreferences();
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
   const [transactions, setTransactions] = useState<TransactionFeedItem[]>([]);
-  const [draft, setDraft] = useState(emptyDraft);
+  const [filters, setFilters] = useState<TransactionFilters>(emptyFilters);
+  const [showFilters, setShowFilters] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
-  const [saving, setSaving] = useState(false);
 
   const refresh = useCallback(async () => {
-    if (!user) {
-      return;
-    }
-
+    if (!user) return;
     const [accountRows, categoryRows, transactionRows] = await Promise.all([
       listAccountsByUser(user.id),
       listCategoriesByUser(user.id),
-      listTransactionsByUser(user.id, 30),
+      listTransactionsByUser(user.id),
     ]);
-
     setAccounts(accountRows.filter((account) => !account.isArchived));
     setCategories(categoryRows);
     setTransactions(transactionRows);
@@ -75,315 +81,339 @@ export function TransactionsScreen() {
     }, [refresh])
   );
 
-  const availableCategories = categories.filter((category) => {
-    if (draft.type === 'transfer') {
-      return false;
-    }
-
-    return category.type === 'both' || category.type === draft.type;
-  });
-  const destinationAccounts = accounts.filter((account) => account.id !== draft.accountId);
-
-  async function handleSaveTransaction() {
-    if (!user || saving) {
-      return;
-    }
-
-    try {
-      setSaving(true);
-      await createTransaction({
-        userId: user.id,
-        type: draft.type,
-        amount: Number(draft.amount),
-        accountId: draft.accountId || null,
-        toAccountId: draft.type === 'transfer' ? draft.toAccountId || null : null,
-        categoryId: draft.type === 'transfer' ? null : draft.categoryId || null,
-        notes: draft.notes,
-        isImpulse: draft.type === 'expense' ? draft.isImpulse : false,
-      });
-
-      setDraft((current) => ({
-        ...emptyDraft,
-        type: current.type,
-      }));
-      setStatus(`${capitalize(draft.type)} recorded.`);
-      await refresh();
-    } catch (error) {
-      setStatus(error instanceof Error ? error.message : 'Failed to save transaction.');
-    } finally {
-      setSaving(false);
-    }
-  }
+  const filteredTransactions = useMemo(
+    () => transactions.filter((transaction) => matchesTransactionFilters(transaction, filters)),
+    [transactions, filters]
+  );
+  const hasActiveFilters = checkHasActiveFilters(filters);
+  const activeFilterCount = getActiveFilterCount(filters);
 
   return (
-    <ScrollView
-      style={styles.screen}
-      contentContainerStyle={styles.content}
-      showsVerticalScrollIndicator={false}
-    >
-      <View style={styles.hero}>
-        <Text style={styles.kicker}>Transactions</Text>
-        <Text style={styles.title}>Record real money movement.</Text>
-        <Text style={styles.subtitle}>
-          Income, expenses, and transfers now write to SQLite with validation so
-          transfers do not inflate totals.
-        </Text>
-        <Text style={styles.helperText}>
-          New entries use the current timestamp. Date and time pickers stay in a
-          later slice.
-        </Text>
-        {status ? <Text style={styles.status}>{status}</Text> : null}
-      </View>
-
-      <SectionCard
-        title="Add Transaction"
-        subtitle="Use this for wallet top-ups, spending, and transfers between your own accounts."
+    <View style={styles.screen}>
+      <ScrollView
+        style={styles.scroll}
+        contentContainerStyle={styles.content}
+        showsVerticalScrollIndicator={false}
       >
-        <TextInput
-          value={draft.amount}
-          onChangeText={(value) => setDraft((current) => ({ ...current, amount: value }))}
-          placeholder="Amount"
-          placeholderTextColor={colors.mutedInk}
-          keyboardType="decimal-pad"
-          style={styles.input}
-        />
-
-        <View style={styles.chipRow}>
-          {transactionTypes.map((type) => (
-            <Pressable
-              key={type}
-              onPress={() =>
-                setDraft((current) => ({
-                  ...current,
-                  type,
-                  categoryId: type === 'transfer' ? '' : current.categoryId,
-                  toAccountId: type === 'transfer' ? current.toAccountId : '',
-                  isImpulse: type === 'expense' ? current.isImpulse : false,
-                }))
-              }
-              style={[styles.chip, draft.type === type && styles.chipActive]}
-            >
-              <Text
-                style={[
-                  styles.chipLabel,
-                  draft.type === type && styles.chipLabelActive,
-                ]}
-              >
-                {capitalize(type)}
-              </Text>
-            </Pressable>
-          ))}
+        <View style={styles.headerRow}>
+          <Text style={styles.pageTitle}>Transaction Logs</Text>
+          <Pressable onPress={() => toggleBalancesHidden()} style={styles.iconButton}>
+            <Ionicons name={balancesHidden ? 'eye-off-outline' : 'eye-outline'} size={20} color={colors.ink} />
+          </Pressable>
         </View>
+        {status ? <Text style={styles.status}>{status}</Text> : null}
 
-        <Text style={styles.selectorLabel}>
-          {draft.type === 'transfer' ? 'From account' : 'Account'}
-        </Text>
-        <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          contentContainerStyle={styles.chipRow}
-        >
-          {accounts.map((account) => (
+        <View style={[styles.card, shadows.small]}>
+          <View style={styles.searchRow}>
+            <TextInput
+              value={filters.query}
+              onChangeText={(value) => setFilters((current) => ({ ...current, query: value }))}
+              placeholder="Search transactions"
+              placeholderTextColor={colors.mutedInk}
+              style={[styles.input, styles.searchInput]}
+            />
             <Pressable
-              key={account.id}
-              onPress={() =>
-                setDraft((current) => ({
-                  ...current,
-                  accountId: account.id,
-                  toAccountId:
-                    current.type === 'transfer' && current.toAccountId === account.id
-                      ? ''
-                      : current.toAccountId,
-                }))
-              }
-              style={[
-                styles.chip,
-                draft.accountId === account.id && styles.chipActive,
-              ]}
+              onPress={() => setShowFilters((s) => !s)}
+              style={[styles.iconButton, activeFilterCount > 0 && styles.iconButtonActive]}
             >
-              <Text
-                style={[
-                  styles.chipLabel,
-                  draft.accountId === account.id && styles.chipLabelActive,
-                ]}
-              >
-                {account.name}
-              </Text>
+              <Ionicons name={showFilters ? 'filter' : 'filter-outline'} size={20} color={activeFilterCount > 0 ? colors.primary : colors.ink} />
+              {activeFilterCount > 0 ? (
+                <View style={styles.badge}>
+                  <Text style={styles.badgeText}>{activeFilterCount}</Text>
+                </View>
+              ) : null}
             </Pressable>
-          ))}
-        </ScrollView>
+          </View>
 
-        {draft.type === 'transfer' ? (
-          <>
-            <Text style={styles.selectorLabel}>To account</Text>
-            <ScrollView
-              horizontal
-              showsHorizontalScrollIndicator={false}
-              contentContainerStyle={styles.chipRow}
-            >
-              {destinationAccounts.map((account) => (
-                <Pressable
-                  key={account.id}
-                  onPress={() =>
-                    setDraft((current) => ({
-                      ...current,
-                      toAccountId: account.id,
-                    }))
-                  }
-                  style={[
-                    styles.chip,
-                    draft.toAccountId === account.id && styles.chipActive,
-                  ]}
-                >
-                  <Text
-                    style={[
-                      styles.chipLabel,
-                      draft.toAccountId === account.id && styles.chipLabelActive,
-                    ]}
+          {showFilters ? (
+            <>
+              <Text style={styles.selectorLabel}>Entry state</Text>
+              <View style={styles.chipRow}>
+                {entryStateFilters.map((entryState) => (
+                  <Pressable
+                    key={entryState}
+                    onPress={() => setFilters((current) => ({ ...current, entryState }))}
+                    style={[styles.chip, filters.entryState === entryState && styles.chipActive]}
                   >
-                    {account.name}
+                    <Text
+                      style={[
+                        styles.chipLabel,
+                        filters.entryState === entryState && styles.chipLabelActive,
+                      ]}
+                    >
+                      {capitalize(entryState)}
+                    </Text>
+                  </Pressable>
+                ))}
+              </View>
+              <Text style={styles.selectorLabel}>Type</Text>
+              <View style={styles.chipRow}>
+                {ledgerTypeFilters.map((type) => (
+                  <Pressable
+                    key={type}
+                    onPress={() => setFilters((current) => ({ ...current, type }))}
+                    style={[styles.chip, filters.type === type && styles.chipActive]}
+                  >
+                    <Text style={[styles.chipLabel, filters.type === type && styles.chipLabelActive]}>
+                      {capitalize(type)}
+                    </Text>
+                  </Pressable>
+                ))}
+              </View>
+              <Text style={styles.selectorLabel}>Date range</Text>
+              <View style={styles.inputRow}>
+                <DatePickerField
+                  value={filters.fromDate}
+                  onChange={(value) => setFilters((current) => ({ ...current, fromDate: value }))}
+                  placeholder="From date"
+                  style={styles.rowInput}
+                />
+                <DatePickerField
+                  value={filters.toDate}
+                  onChange={(value) => setFilters((current) => ({ ...current, toDate: value }))}
+                  placeholder="To date"
+                  style={styles.rowInput}
+                />
+              </View>
+              <View style={styles.inlineActionsRow}>
+                <Text style={styles.helperText}>Leave either side blank to keep the range open.</Text>
+                {(filters.fromDate || filters.toDate) && (
+                  <Pressable onPress={() => setFilters((current) => ({ ...current, fromDate: '', toDate: '' }))}>
+                    <Text style={styles.inlineAction}>Clear dates</Text>
+                  </Pressable>
+                )}
+              </View>
+              <Text style={styles.selectorLabel}>Account</Text>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipRow}>
+                <Pressable
+                  onPress={() => setFilters((current) => ({ ...current, accountId: '' }))}
+                  style={[styles.chip, !filters.accountId && styles.chipActive]}
+                >
+                  <Text style={[styles.chipLabel, !filters.accountId && styles.chipLabelActive]}>
+                    All accounts
                   </Text>
                 </Pressable>
-              ))}
-            </ScrollView>
-            {destinationAccounts.length === 0 ? (
-              <Text style={styles.emptyText}>
-                Add a second account in Settings before using transfers.
-              </Text>
-            ) : null}
-          </>
-        ) : (
-          <>
-            <Text style={styles.selectorLabel}>Category</Text>
-            <ScrollView
-              horizontal
-              showsHorizontalScrollIndicator={false}
-              contentContainerStyle={styles.chipRow}
-            >
-              <Pressable
-                onPress={() =>
-                  setDraft((current) => ({ ...current, categoryId: '' }))
-                }
-                style={[styles.chip, !draft.categoryId && styles.chipActive]}
-              >
-                <Text
-                  style={[
-                    styles.chipLabel,
-                    !draft.categoryId && styles.chipLabelActive,
-                  ]}
+                {accounts.map((account) => (
+                  <Pressable
+                    key={account.id}
+                    onPress={() => setFilters((current) => ({ ...current, accountId: account.id }))}
+                    style={[styles.chip, filters.accountId === account.id && styles.chipActive]}
+                  >
+                    <Text
+                      style={[
+                        styles.chipLabel,
+                        filters.accountId === account.id && styles.chipLabelActive,
+                      ]}
+                    >
+                      {account.name}
+                    </Text>
+                  </Pressable>
+                ))}
+              </ScrollView>
+              <Text style={styles.selectorLabel}>Category</Text>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipRow}>
+                <Pressable
+                  onPress={() => setFilters((current) => ({ ...current, categoryId: '' }))}
+                  style={[styles.chip, !filters.categoryId && styles.chipActive]}
                 >
-                  Uncategorised
+                  <Text style={[styles.chipLabel, !filters.categoryId && styles.chipLabelActive]}>
+                    All categories
+                  </Text>
+                </Pressable>
+                {categories.map((category) => (
+                  <Pressable
+                    key={category.id}
+                    onPress={() => setFilters((current) => ({ ...current, categoryId: category.id }))}
+                    style={[styles.chip, filters.categoryId === category.id && styles.chipActive]}
+                  >
+                    <Text
+                      style={[
+                        styles.chipLabel,
+                        filters.categoryId === category.id && styles.chipLabelActive,
+                      ]}
+                    >
+                      {category.name}
+                    </Text>
+                  </Pressable>
+                ))}
+              </ScrollView>
+              <Pressable
+                onPress={() => setFilters((current) => ({ ...current, impulseOnly: !current.impulseOnly }))}
+                style={[styles.flagRow, filters.impulseOnly && styles.flagRowActive]}
+              >
+                <Text style={[styles.flagText, filters.impulseOnly && styles.flagTextActive]}>
+                  Show impulse expenses only
                 </Text>
               </Pressable>
-              {availableCategories.map((category) => (
-                <Pressable
-                  key={category.id}
-                  onPress={() =>
-                    setDraft((current) => ({
-                      ...current,
-                      categoryId: category.id,
-                    }))
-                  }
-                  style={[
-                    styles.chip,
-                    draft.categoryId === category.id && styles.chipActive,
-                  ]}
-                >
-                  <Text
-                    style={[
-                      styles.chipLabel,
-                      draft.categoryId === category.id && styles.chipLabelActive,
-                    ]}
-                  >
-                    {category.name}
-                  </Text>
-                </Pressable>
-              ))}
-            </ScrollView>
-          </>
-        )}
-
-        {draft.type === 'expense' ? (
-          <Pressable
-            onPress={() =>
-              setDraft((current) => ({
-                ...current,
-                isImpulse: !current.isImpulse,
-              }))
-            }
-            style={[styles.flagRow, draft.isImpulse && styles.flagRowActive]}
-          >
-            <Text
-              style={[
-                styles.flagText,
-                draft.isImpulse && styles.flagTextActive,
-              ]}
-            >
-              Mark as impulse spend
-            </Text>
-          </Pressable>
-        ) : null}
-
-        <TextInput
-          value={draft.notes}
-          onChangeText={(value) => setDraft((current) => ({ ...current, notes: value }))}
-          placeholder="Notes"
-          placeholderTextColor={colors.mutedInk}
-          multiline
-          style={[styles.input, styles.notesInput]}
-        />
-
-        {accounts.length === 0 ? (
-          <Text style={styles.emptyText}>
-            Create at least one account in Settings before recording a transaction.
-          </Text>
-        ) : null}
-
-        <Pressable
-          onPress={handleSaveTransaction}
-          disabled={saving || accounts.length === 0}
-          style={[
-            styles.primaryButton,
-            (saving || accounts.length === 0) && styles.primaryButtonDisabled,
-          ]}
-        >
-          <Text style={styles.primaryButtonLabel}>
-            {saving ? 'Saving...' : 'Save Transaction'}
-          </Text>
-        </Pressable>
-      </SectionCard>
-
-      <SectionCard
-        title="Recent Transactions"
-        subtitle="Newest activity is listed first and includes transfers in the same ledger."
-      >
-        {transactions.length === 0 ? (
-          <Text style={styles.emptyText}>No transactions recorded yet.</Text>
-        ) : (
-          transactions.map((transaction) => (
-            <View key={transaction.id} style={styles.itemRow}>
-              <View style={styles.itemCopy}>
-                <Text style={styles.itemTitle}>
-                  {transaction.notes?.trim() || defaultTransactionTitle(transaction)}
+              <View style={styles.inlineActionsRow}>
+                <Text style={styles.resultSummary}>
+                  {filteredTransactions.length} matching {filteredTransactions.length === 1 ? 'entry' : 'entries'}
                 </Text>
-                <Text style={styles.itemMeta}>{buildTransactionMeta(transaction)}</Text>
-                <Text style={styles.itemMeta}>
-                  {formatTransactionDate(transaction.transactionAt)}
-                </Text>
+                {hasActiveFilters ? (
+                  <Pressable onPress={() => setFilters(emptyFilters)}>
+                    <Text style={styles.inlineAction}>Clear filters</Text>
+                  </Pressable>
+                ) : null}
               </View>
-              <Text style={styles.itemAmount}>
-                {formatTransactionAmount(transaction)}
-              </Text>
-            </View>
-          ))
-        )}
-      </SectionCard>
-    </ScrollView>
+            </>
+          ) : null}
+        </View>
+
+        <View style={[styles.card, shadows.small]}>
+          <View style={styles.logHeaderRow}>
+            <Text style={styles.cardTitle}>Transaction Logs</Text>
+            <Text style={styles.resultSummary}>
+              {filteredTransactions.length} {filteredTransactions.length === 1 ? 'entry' : 'entries'}
+            </Text>
+          </View>
+          {filteredTransactions.length === 0 ? (
+            <Text style={styles.emptyText}>
+              {hasActiveFilters
+                ? 'No transactions match the current filters.'
+                : 'No transactions recorded yet.'}
+            </Text>
+          ) : (
+            filteredTransactions.map((transaction) => (
+              <View key={transaction.id} style={styles.itemRow}>
+                <View style={styles.itemCopy}>
+                  <View style={styles.titleRow}>
+                    <Text style={styles.itemTitle}>
+                      {transaction.notes?.trim() || defaultTransactionTitle(transaction)}
+                    </Text>
+                    {transaction.isLazyEntry ? (
+                      <View style={styles.incompleteBadge}>
+                        <Text style={styles.incompleteBadgeText}>Incomplete</Text>
+                      </View>
+                    ) : null}
+                  </View>
+                  <Text style={styles.itemMeta}>{buildTransactionMeta(transaction)}</Text>
+                  <Text style={styles.itemMeta}>{formatTransactionDate(transaction.transactionAt)}</Text>
+                </View>
+                <View style={styles.itemActionGroup}>
+                  <Text style={styles.itemAmount}>
+                    {maskFinancialValue(
+                      transaction.isLazyEntry
+                        ? formatMoney(transaction.amount)
+                        : formatTransactionAmount(transaction),
+                      balancesHidden
+                    )}
+                  </Text>
+                  <Pressable onPress={() => router.push(`/add-transaction?editId=${transaction.id}`)}>
+                    <Text style={styles.inlineAction}>
+                      {transaction.isLazyEntry ? 'Complete' : 'Edit'}
+                    </Text>
+                  </Pressable>
+                </View>
+              </View>
+            ))
+          )}
+        </View>
+      </ScrollView>
+
+      <Pressable onPress={() => router.push('/add-transaction')} style={styles.fab}>
+        <Ionicons name="add" size={28} color={colors.surface} />
+      </Pressable>
+    </View>
   );
 }
 
 function capitalize(value: string) {
   return `${value.slice(0, 1).toUpperCase()}${value.slice(1)}`;
+}
+
+function matchesTransactionFilters(
+  transaction: TransactionFeedItem,
+  filters: TransactionFilters
+) {
+  const query = filters.query.trim().toLowerCase();
+
+  if (query) {
+    const haystack = [
+      transaction.type,
+      transaction.notes,
+      transaction.locationName,
+      transaction.accountName,
+      transaction.toAccountName,
+      transaction.categoryName,
+    ]
+      .filter(Boolean)
+      .join(' ')
+      .toLowerCase();
+
+    if (!haystack.includes(query)) {
+      return false;
+    }
+  }
+
+  if (filters.type !== 'all' && transaction.type !== filters.type) {
+    return false;
+  }
+
+  if (filters.entryState === 'complete' && transaction.isLazyEntry) {
+    return false;
+  }
+
+  if (filters.entryState === 'incomplete' && !transaction.isLazyEntry) {
+    return false;
+  }
+
+  if (
+    filters.accountId &&
+    transaction.accountId !== filters.accountId &&
+    transaction.toAccountId !== filters.accountId
+  ) {
+    return false;
+  }
+
+  if (filters.categoryId && transaction.categoryId !== filters.categoryId) {
+    return false;
+  }
+
+  if (filters.impulseOnly && !transaction.isImpulse) {
+    return false;
+  }
+
+  try {
+    const transactionDate = toDateKey(transaction.transactionAt);
+
+    if (filters.fromDate && isDateKey(filters.fromDate) && transactionDate < filters.fromDate) {
+      return false;
+    }
+
+    if (filters.toDate && isDateKey(filters.toDate) && transactionDate > filters.toDate) {
+      return false;
+    }
+  } catch {
+    return false;
+  }
+
+  return true;
+}
+
+function checkHasActiveFilters(filters: TransactionFilters) {
+  return Boolean(
+    filters.query ||
+      filters.type !== 'all' ||
+      filters.entryState !== 'all' ||
+      filters.accountId ||
+      filters.categoryId ||
+      filters.fromDate ||
+      filters.toDate ||
+      filters.impulseOnly
+  );
+}
+
+function getActiveFilterCount(filters: TransactionFilters) {
+  let count = 0;
+  if (filters.query) count += 1;
+  if (filters.type !== 'all') count += 1;
+  if (filters.entryState !== 'all') count += 1;
+  if (filters.accountId) count += 1;
+  if (filters.categoryId) count += 1;
+  if (filters.fromDate) count += 1;
+  if (filters.toDate) count += 1;
+  if (filters.impulseOnly) count += 1;
+  return count;
 }
 
 function defaultTransactionTitle(transaction: TransactionFeedItem) {
@@ -397,6 +427,10 @@ function defaultTransactionTitle(transaction: TransactionFeedItem) {
 function buildTransactionMeta(transaction: TransactionFeedItem) {
   if (transaction.type === 'transfer') {
     return `${transaction.accountName ?? 'Unknown'} -> ${transaction.toAccountName ?? 'Unknown'}`;
+  }
+
+  if (transaction.isLazyEntry) {
+    return `${capitalize(transaction.type)} | Incomplete entry`;
   }
 
   return `${transaction.accountName ?? 'Unknown'} | ${transaction.categoryName ?? 'Uncategorised'}`;
@@ -415,161 +449,78 @@ function formatTransactionAmount(transaction: TransactionFeedItem) {
 }
 
 const styles = StyleSheet.create({
-  screen: {
-    flex: 1,
-    backgroundColor: colors.canvas,
-  },
-  content: {
-    paddingHorizontal: 18,
-    paddingTop: 24,
-    paddingBottom: 120,
-    gap: 16,
-  },
-  hero: {
-    backgroundColor: colors.surface,
-    borderRadius: 28,
-    padding: 22,
-    borderWidth: 1,
-    borderColor: colors.border,
-    gap: 8,
-  },
-  kicker: {
-    fontSize: 12,
-    color: colors.mutedInk,
-    textTransform: 'uppercase',
-    letterSpacing: 1.2,
-    fontWeight: '700',
-  },
-  title: {
-    fontSize: 30,
-    lineHeight: 34,
-    color: colors.ink,
-    fontWeight: '800',
-  },
-  subtitle: {
-    fontSize: 14,
-    lineHeight: 20,
-    color: colors.mutedInk,
-  },
-  helperText: {
-    color: colors.mutedInk,
-    fontSize: 13,
-    lineHeight: 18,
-  },
-  status: {
-    color: colors.ink,
-    fontSize: 13,
-    lineHeight: 18,
-    fontWeight: '600',
-  },
-  input: {
-    borderWidth: 1,
-    borderColor: colors.border,
-    borderRadius: 16,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    backgroundColor: colors.canvas,
-    color: colors.ink,
-  },
-  notesInput: {
-    minHeight: 96,
-    textAlignVertical: 'top',
-  },
-  chipRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-  },
-  chip: {
-    borderRadius: 999,
-    borderWidth: 1,
-    borderColor: colors.border,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    backgroundColor: colors.canvas,
-  },
-  chipActive: {
-    backgroundColor: colors.ink,
-    borderColor: colors.ink,
-  },
-  chipLabel: {
-    color: colors.ink,
-    fontWeight: '600',
-    fontSize: 12,
-  },
-  chipLabelActive: {
-    color: colors.surface,
-  },
-  selectorLabel: {
-    color: colors.mutedInk,
-    fontSize: 12,
-    fontWeight: '700',
-    textTransform: 'uppercase',
-    letterSpacing: 0.8,
-  },
-  flagRow: {
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: colors.border,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    backgroundColor: colors.canvas,
-  },
-  flagRowActive: {
-    backgroundColor: colors.sun,
-    borderColor: colors.sun,
-  },
-  flagText: {
-    color: colors.ink,
-    fontWeight: '600',
-  },
-  flagTextActive: {
-    color: colors.ink,
-  },
-  primaryButton: {
-    backgroundColor: colors.ink,
-    borderRadius: 18,
-    paddingVertical: 14,
+  screen: { flex: 1, backgroundColor: colors.canvas },
+  scroll: { flex: 1 },
+  content: { paddingHorizontal: spacing.lg, paddingTop: spacing.lg, paddingBottom: 120, gap: spacing.lg },
+  headerRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  pageTitle: { fontSize: 28, fontWeight: '800', color: colors.ink },
+  iconButton: { width: 40, height: 40, borderRadius: 20, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border, alignItems: 'center', justifyContent: 'center' },
+  iconButtonActive: { borderColor: colors.primary },
+  status: { color: colors.ink, fontSize: 13, lineHeight: 18, fontWeight: '600' },
+  card: { backgroundColor: colors.surface, borderRadius: radii.xxl, padding: spacing.lg, gap: spacing.md, borderWidth: 1, borderColor: colors.border },
+  logHeaderRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  cardTitle: { fontSize: 16, fontWeight: '700', color: colors.ink },
+  searchRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  searchInput: { flex: 1 },
+  input: { borderWidth: 1, borderColor: colors.border, borderRadius: radii.lg, paddingHorizontal: spacing.md, paddingVertical: 12, backgroundColor: colors.surfaceSecondary, color: colors.ink },
+  inputRow: { flexDirection: 'row', gap: 10 },
+  rowInput: { flex: 1 },
+  helperText: { color: colors.mutedInk, fontSize: 12, lineHeight: 18, flex: 1 },
+  chipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  chip: { borderRadius: radii.full, borderWidth: 1, borderColor: colors.border, paddingHorizontal: 12, paddingVertical: 8, backgroundColor: colors.surfaceSecondary },
+  chipActive: { backgroundColor: colors.primary, borderColor: colors.primary },
+  chipLabel: { color: colors.ink, fontWeight: '600', fontSize: 12 },
+  chipLabelActive: { color: colors.surface },
+  selectorLabel: { color: colors.mutedInk, fontSize: 12, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.8 },
+  flagRow: { borderRadius: radii.lg, borderWidth: 1, borderColor: colors.border, paddingHorizontal: 14, paddingVertical: 12, backgroundColor: colors.surfaceSecondary },
+  flagRowActive: { backgroundColor: colors.warningLight, borderColor: colors.warning },
+  flagText: { color: colors.ink, fontWeight: '600' },
+  flagTextActive: { color: colors.warning },
+  inlineActionsRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: 12 },
+  resultSummary: { color: colors.mutedInk, fontSize: 12, fontWeight: '700' },
+  emptyText: { color: colors.mutedInk, fontSize: 14, lineHeight: 20 },
+  itemRow: { flexDirection: 'row', justifyContent: 'space-between', gap: 12, paddingVertical: 10, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border },
+  itemCopy: { flex: 1, gap: 3 },
+  titleRow: { flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' },
+  itemTitle: { color: colors.ink, fontSize: 15, fontWeight: '700' },
+  itemMeta: { color: colors.mutedInk, fontSize: 12 },
+  itemActionGroup: { alignItems: 'flex-end', gap: 8 },
+  itemAmount: { color: colors.ink, fontSize: 14, fontWeight: '700', textAlign: 'right' },
+  inlineAction: { color: colors.primary, fontSize: 12, fontWeight: '700' },
+  badge: {
+    position: 'absolute',
+    top: -4,
+    right: -4,
+    minWidth: 18,
+    height: 18,
+    borderRadius: 9,
+    backgroundColor: colors.primary,
     alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 4,
   },
-  primaryButtonDisabled: {
-    opacity: 0.5,
+  badgeText: { color: colors.surface, fontSize: 10, fontWeight: '700' },
+  incompleteBadge: {
+    borderRadius: radii.sm,
+    backgroundColor: colors.warningLight,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
   },
-  primaryButtonLabel: {
-    color: colors.surface,
-    fontWeight: '800',
-    fontSize: 14,
-  },
-  emptyText: {
-    color: colors.mutedInk,
-    fontSize: 14,
-    lineHeight: 20,
-  },
-  itemRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    gap: 12,
-    paddingVertical: 10,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: colors.border,
-  },
-  itemCopy: {
-    flex: 1,
-    gap: 3,
-  },
-  itemTitle: {
-    color: colors.ink,
-    fontSize: 15,
-    fontWeight: '700',
-  },
-  itemMeta: {
-    color: colors.mutedInk,
-    fontSize: 12,
-  },
-  itemAmount: {
-    color: colors.ink,
-    fontSize: 14,
-    fontWeight: '700',
-    textAlign: 'right',
+  incompleteBadgeText: { color: colors.warning, fontSize: 10, fontWeight: '700' },
+  fab: {
+    position: 'absolute',
+    right: spacing.lg,
+    bottom: spacing.lg,
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: colors.primary,
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: colors.shadow,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 4,
+    elevation: 6,
   },
 });
