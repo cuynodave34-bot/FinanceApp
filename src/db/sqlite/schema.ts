@@ -66,10 +66,13 @@ export const sqliteSchema = `
     id text primary key not null,
     user_id text not null,
     name text not null,
-    target_amount real,
     current_amount real not null default 0,
-    account_id text,
-    is_general_savings integer not null default 0,
+    interest_rate real not null default 0,
+    interest_period text not null default 'annual',
+    minimum_balance_for_interest real not null default 0,
+    withholding_tax_rate real not null default 0,
+    maintaining_balance real not null default 0,
+    is_spendable integer not null default 0,
     deleted_at text,
     created_at text not null,
     updated_at text not null
@@ -126,9 +129,20 @@ export const sqliteSchema = `
     updated_at text not null
   );
 
+  create table if not exists ai_chat_memory (
+    id text primary key not null,
+    user_id text not null,
+    role text not null,
+    content text not null,
+    created_at text not null
+  );
+
   create index if not exists idx_transactions_user_date
     on transactions (user_id, transaction_at);
 
   create index if not exists idx_sync_queue_status_created
     on sync_queue (status, created_at);
+
+  create index if not exists idx_ai_chat_memory_user_created
+    on ai_chat_memory (user_id, created_at);
 `;

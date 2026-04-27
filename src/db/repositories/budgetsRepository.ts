@@ -22,6 +22,7 @@ type UpsertBudgetInput = {
   userId: string;
   budgetDate: string;
   budgetAmount: number;
+  carriedOverAmount?: number;
   notes?: string | null;
 };
 
@@ -66,6 +67,7 @@ export async function upsertBudget(input: UpsertBudgetInput) {
   }
 
   const budgetAmount = normalizeBudgetAmount(input.budgetAmount);
+  const carriedOverAmount = normalizeBudgetAmount(input.carriedOverAmount ?? 0);
   const notes = input.notes?.trim() ? input.notes.trim() : null;
   const database = getDatabase();
   const existing = await database.getFirstAsync<{ id: string; createdAt: string }>(
@@ -80,7 +82,7 @@ export async function upsertBudget(input: UpsertBudgetInput) {
     userId: input.userId,
     budgetDate: input.budgetDate,
     budgetAmount,
-    carriedOverAmount: 0,
+    carriedOverAmount,
     overspentAmount: 0,
     notes,
     deletedAt: null,
@@ -93,13 +95,14 @@ export async function upsertBudget(input: UpsertBudgetInput) {
       `update budgets
       set budget_amount = ?,
           notes = ?,
-          carried_over_amount = 0,
+          carried_over_amount = ?,
           overspent_amount = 0,
           updated_at = ?
       where id = ? and user_id = ?`,
       [
         budget.budgetAmount,
         budget.notes ?? null,
+        budget.carriedOverAmount,
         budget.updatedAt,
         budget.id,
         budget.userId,
@@ -128,7 +131,7 @@ export async function upsertBudget(input: UpsertBudgetInput) {
         budget.userId,
         budget.budgetDate,
         budget.budgetAmount,
-        0,
+        budget.carriedOverAmount,
         0,
         budget.notes ?? null,
         null,

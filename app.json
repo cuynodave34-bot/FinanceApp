@@ -6,14 +6,10 @@
     "version": "0.1.0",
     "orientation": "portrait",
     "userInterfaceStyle": "automatic",
-    "icon": "./assets/icon.png",
     "splash": {
-      "image": "./assets/splash.png",
-      "resizeMode": "contain",
       "backgroundColor": "#f4efe3"
     },
     "notification": {
-      "icon": "./assets/icon.png",
       "color": "#17281f"
     },
     "backgroundColor": "#f4efe3",
@@ -61,7 +57,6 @@
     "android": {
       "package": "com.studentfinance.app",
       "adaptiveIcon": {
-        "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#f4efe3"
       }
     },

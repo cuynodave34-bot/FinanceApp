@@ -66,7 +66,7 @@ export function calculateBudgetSummaries({
   for (const date of fullRange) {
     const budget = budgetMap.get(date);
     const baseBudget = budget?.budgetAmount ?? 0;
-    const carriedOverAmount = previousRemaining > 0 ? previousRemaining : 0;
+    const carriedOverAmount = budget?.carriedOverAmount ?? 0;
     const overspentAmount = previousRemaining < 0 ? Math.abs(previousRemaining) : 0;
     const availableToSpend = Number(
       (baseBudget + carriedOverAmount - overspentAmount).toFixed(2)
@@ -121,6 +121,20 @@ export function calculatePendingBudgetReserve(
 
   return Math.max(
     futureSummaries[futureSummaries.length - 1]?.remainingAmount ?? 0,
+    0
+  );
+}
+
+export function calculateUpcomingPlannedExpenses(
+  summaries: BudgetSummary[],
+  today: string
+) {
+  const futureSummaries = summaries.filter(
+    (summary) => summary.date > today && summary.hasConfiguredBudget
+  );
+
+  return futureSummaries.reduce(
+    (sum, summary) => sum + summary.baseBudget,
     0
   );
 }

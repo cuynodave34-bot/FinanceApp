@@ -21,12 +21,15 @@ const INSIGHT_PROMPTS: Record<InsightType, string> = {
 export async function generateInsight(userId: string, type: InsightType) {
   const context = await buildRagContext(userId);
 
-  const systemPrompt = `You are Penny, a friendly and concise financial assistant for a student using the Student Finance Tracker app. You have access to the user's real financial data. Be supportive, non-judgmental, and practical. Always base your advice on the data provided. Never make up numbers.`;
+  const systemPrompt = `You are Penny, a friendly and concise financial assistant for a student using the Student Finance Tracker app. You have access to the user's real financial data. Be supportive, non-judgmental, and practical. Always base your advice on the data provided. Never make up numbers. Use the structured JSON table snapshots for exact fields and feature details. When explaining app behavior, reflect the current rules in the app feature context, including explicit budget carry-over, Quick Budget spendable-funds cap, lazy-entry completion, budget/source overdraft prompts, and the hard total spendable-funds block for expenses.`;
 
   const userPrompt = `Here is the user's current financial snapshot (today is ${context.today}):
 
 --- PROFILE ---
 ${context.profile}
+
+--- APP FEATURES AND DATA MODEL ---
+${context.appKnowledge}
 
 --- ACCOUNTS ---
 ${context.accounts}
@@ -37,14 +40,29 @@ ${context.transactions}
 --- BUDGET ---
 ${context.budgets}
 
+--- CATEGORIES ---
+${context.categories}
+
 --- SAVINGS ---
 ${context.savings}
 
 --- DEBTS ---
 ${context.debts}
 
+--- OPERATIONS AND APP STATE ---
+${context.operations}
+
+--- REMINDERS ---
+${context.reminders}
+
 --- REPORTS ---
 ${context.reports}
+
+--- STRUCTURED TABLE SNAPSHOTS ---
+${context.rawData}
+
+--- DATA COVERAGE AND LIMITS ---
+${context.dataCoverage}
 
 --- TASK ---
 ${INSIGHT_PROMPTS[type]}`;

@@ -12,9 +12,11 @@ import {
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuth } from '@/features/auth/provider/AuthProvider';
 import { colors, spacing, radii } from '@/shared/theme/colors';
 import { generateChatResponse, ChatMessage } from '@/services/ai/generateChatResponse';
+import { listAiChatMemory } from '@/db/repositories/aiChatMemoryRepository';
 
 const SUGGESTED_QUESTIONS = [
   'How much can I spend today?',
@@ -24,6 +26,11 @@ const SUGGESTED_QUESTIONS = [
   'Am I overspending?',
   'Budget discipline tips',
 ];
+
+const WELCOME_MESSAGE: ChatMessage = {
+  role: 'assistant',
+  content: "Hi! I'm Penny, your financial assistant. Ask me about your money or pick a question below.",
+};
 
 function useTypingAnimation(
   fullText: string,
@@ -72,15 +79,15 @@ function TypingMessage({ content, onComplete }: { content: string; onComplete?: 
 export function AIChatScreen() {
   const router = useRouter();
   const navigation = useNavigation();
+  const insets = useSafeAreaInsets();
   const { user } = useAuth();
   const scrollRef = useRef<ScrollView>(null);
+  const inputBottomPadding = Math.max(
+    insets.bottom,
+    Platform.OS === 'ios' ? spacing.xl : spacing.md
+  );
 
-  const [messages, setMessages] = useState<ChatMessage[]>([
-    {
-      role: 'assistant',
-      content: "Hi! I'm Penny, your financial assistant. Ask me anything about your money or pick a question below.",
-    },
-  ]);
+  const [messages, setMessages] = useState<ChatMessage[]>([WELCOME_MESSAGE]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -90,10 +97,29 @@ export function AIChatScreen() {
     useCallback(() => {
       setError(null);
       navigation.setOptions({ tabBarStyle: { display: 'none' } });
+
+      if (user) {
+        listAiChatMemory(user.id)
+          .then((memory) => {
+            if (memory.length > 0) {
+              setMessages([
+                WELCOME_MESSAGE,
+                ...memory.map((message): ChatMessage => ({
+                  role: message.role,
+                  content: message.content,
+                })),
+              ]);
+            }
+          })
+          .catch((memoryError) => {
+            console.warn('Failed to load Penny chat memory', memoryError);
+          });
+      }
+
       return () => {
         navigation.setOptions({ tabBarStyle: undefined });
       };
-    }, [navigation])
+    }, [navigation, user])
   );
 
   async function handleSend(text: string) {
@@ -131,7 +157,7 @@ export function AIChatScreen() {
   return (
     <KeyboardAvoidingView
       style={styles.container}
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      behavior="padding"
       keyboardVerticalOffset={Platform.OS === 'ios' ? 90 : 0}
     >
       {/* Header */}
@@ -211,10 +237,10 @@ export function AIChatScreen() {
             </ScrollView>
           </View>
         )}
-        <View style={styles.inputBar}>
+        <View style={[styles.inputBar, { paddingBottom: inputBottomPadding }]}>
           <TextInput
             style={styles.input}
-            placeholder="Ask Penny anything..."
+            placeholder="Ask about your money..."
             placeholderTextColor={colors.mutedInk}
             value={input}
             onChangeText={setInput}

@@ -96,14 +96,22 @@ create table if not exists public.savings_goals (
   id text primary key,
   user_id uuid not null references auth.users(id) on delete cascade,
   name text not null,
-  target_amount numeric(14,2),
   current_amount numeric(14,2) not null default 0,
-  account_id text references public.accounts(id) on delete set null,
-  is_general_savings boolean not null default false,
+  interest_rate numeric(8,4) not null default 0,
+  interest_period text not null default 'annual',
+  minimum_balance_for_interest numeric(14,2) not null default 0,
+  withholding_tax_rate numeric(8,4) not null default 0,
+  maintaining_balance numeric(14,2) not null default 0,
+  is_spendable boolean not null default false,
   deleted_at timestamptz,
   created_at timestamptz not null default timezone('utc', now()),
   updated_at timestamptz not null default timezone('utc', now())
 );
+
+alter table public.savings_goals
+  add column if not exists minimum_balance_for_interest numeric(14,2) not null default 0,
+  add column if not exists withholding_tax_rate numeric(8,4) not null default 0,
+  add column if not exists maintaining_balance numeric(14,2) not null default 0;
 
 create table if not exists public.balance_adjustments (
   id text primary key,

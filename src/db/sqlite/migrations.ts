@@ -25,6 +25,12 @@ async function runAlterMigrations(execute: (statement: string) => Promise<void>)
     { table: 'debts', column: 'debt_type', type: 'text' },
     { table: 'debts', column: 'status', type: 'text' },
     { table: 'debts', column: 'linked_transaction_id', type: 'text' },
+    { table: 'savings_goals', column: 'interest_rate', type: 'real' },
+    { table: 'savings_goals', column: 'interest_period', type: 'text' },
+    { table: 'savings_goals', column: 'minimum_balance_for_interest', type: 'real' },
+    { table: 'savings_goals', column: 'withholding_tax_rate', type: 'real' },
+    { table: 'savings_goals', column: 'maintaining_balance', type: 'real' },
+    { table: 'savings_goals', column: 'is_spendable', type: 'integer' },
   ];
 
   for (const { table, column, type } of newColumns) {

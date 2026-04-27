@@ -1,4 +1,5 @@
 import { getDatabase } from '@/db/sqlite/client';
+import { adjustSavingsAmount } from '@/db/repositories/savingsGoalsRepository';
 import { Transaction, TransactionType } from '@/shared/types/domain';
 import { createId } from '@/shared/utils/id';
 import { nowIso } from '@/shared/utils/time';
@@ -135,6 +136,17 @@ async function findActiveAccount(userId: string, accountId: string) {
   );
 }
 
+async function findActiveSavings(userId: string, savingsId: string) {
+  const database = getDatabase();
+
+  return database.getFirstAsync<{ id: string; name: string; isSpendable: number }>(
+    `select id, name, is_spendable as isSpendable
+    from savings_goals
+    where id = ? and user_id = ? and deleted_at is null`,
+    [savingsId, userId]
+  );
+}
+
 async function findAllowedCategory(
   userId: string,
   categoryId: string,
@@ -157,6 +169,39 @@ async function findAllowedCategory(
   }
 
   return category;
+}
+
+async function getTransactionById(userId: string, transactionId: string): Promise<Transaction | null> {
+  const database = getDatabase();
+  const row = await database.getFirstAsync<TransactionRow>(
+    `select
+      id,
+      user_id as userId,
+      type,
+      amount,
+      account_id as accountId,
+      to_account_id as toAccountId,
+      savings_goal_id as savingsGoalId,
+      from_savings_goal_id as fromSavingsGoalId,
+      category_id as categoryId,
+      notes,
+      transaction_at as transactionAt,
+      photo_url as photoUrl,
+      location_name as locationName,
+      latitude,
+      longitude,
+      is_lazy_entry as isLazyEntry,
+      is_impulse as isImpulse,
+      deleted_at as deletedAt,
+      created_at as createdAt,
+      updated_at as updatedAt
+    from transactions
+    where id = ? and user_id = ? and deleted_at is null`,
+    [transactionId, userId]
+  );
+
+  if (!row) return null;
+  return mapTransaction(row);
 }
 
 function normalizeAmount(value: number) {
@@ -225,6 +270,20 @@ async function validateTransactionFields(
       }
     }
 
+    if (fromSavingsGoalId) {
+      const sourceSavings = await findActiveSavings(input.userId, fromSavingsGoalId);
+      if (!sourceSavings) {
+        throw new Error('The selected source savings goal is not available.');
+      }
+    }
+
+    if (savingsGoalId) {
+      const destSavings = await findActiveSavings(input.userId, savingsGoalId);
+      if (!destSavings) {
+        throw new Error('The selected destination savings goal is not available.');
+      }
+    }
+
     return {
       type,
       amount,
@@ -245,18 +304,45 @@ async function validateTransactionFields(
   }
 
   let validatedAccountId: string | null = null;
+  let validatedFromSavingsGoalId: string | null = null;
+  let validatedSavingsGoalId: string | null = null;
   let validatedCategoryId: string | null = null;
 
-  if (accountId) {
-    const account = await findActiveAccount(input.userId, accountId);
-
-    if (!account) {
-      throw new Error('The selected account is not available.');
+  if (type === 'expense') {
+    if (accountId) {
+      const account = await findActiveAccount(input.userId, accountId);
+      if (!account) {
+        throw new Error('The selected account is not available.');
+      }
+      validatedAccountId = account.id;
+    } else if (fromSavingsGoalId) {
+      const savings = await findActiveSavings(input.userId, fromSavingsGoalId);
+      if (!savings) {
+        throw new Error('The selected savings goal is not available.');
+      }
+      if (!savings.isSpendable) {
+        throw new Error('The selected savings goal must be spendable to record an expense from it.');
+      }
+      validatedFromSavingsGoalId = savings.id;
+    } else if (!isLazyEntry) {
+      throw new Error('Select an account or spendable savings goal first.');
     }
-
-    validatedAccountId = account.id;
-  } else if (!isLazyEntry) {
-    throw new Error('Select an account first.');
+  } else if (type === 'income') {
+    if (accountId) {
+      const account = await findActiveAccount(input.userId, accountId);
+      if (!account) {
+        throw new Error('The selected account is not available.');
+      }
+      validatedAccountId = account.id;
+    } else if (savingsGoalId) {
+      const savings = await findActiveSavings(input.userId, savingsGoalId);
+      if (!savings) {
+        throw new Error('The selected savings goal is not available.');
+      }
+      validatedSavingsGoalId = savings.id;
+    } else if (!isLazyEntry) {
+      throw new Error('Select an account or savings goal first.');
+    }
   }
 
   if (categoryId) {
@@ -274,8 +360,8 @@ async function validateTransactionFields(
     amount,
     accountId: validatedAccountId,
     toAccountId: null,
-    savingsGoalId: null,
-    fromSavingsGoalId: null,
+    savingsGoalId: validatedSavingsGoalId,
+    fromSavingsGoalId: validatedFromSavingsGoalId,
     categoryId: validatedCategoryId,
     notes,
     transactionAt,
@@ -337,7 +423,7 @@ export async function createTransaction(input: CreateTransactionInput) {
       deleted_at,
       created_at,
       updated_at
-    ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       transaction.id,
       transaction.userId,
@@ -362,6 +448,13 @@ export async function createTransaction(input: CreateTransactionInput) {
     ]
   );
 
+  if (validated.fromSavingsGoalId) {
+    await adjustSavingsAmount(validated.fromSavingsGoalId, input.userId, -validated.amount);
+  }
+  if (validated.savingsGoalId) {
+    await adjustSavingsAmount(validated.savingsGoalId, input.userId, validated.amount);
+  }
+
   await enqueueSyncItem(
     buildSyncQueueItem(
       transaction.userId,
@@ -379,6 +472,19 @@ export async function updateTransaction(input: UpdateTransactionInput) {
   const validated = await validateTransactionFields(input);
   const updatedAt = nowIso();
   const database = getDatabase();
+
+  const oldTransaction = await getTransactionById(input.userId, input.id);
+  if (!oldTransaction) {
+    throw new Error('Transaction not found.');
+  }
+
+  // Reverse old savings effects before updating the record.
+  if (oldTransaction.fromSavingsGoalId) {
+    await adjustSavingsAmount(oldTransaction.fromSavingsGoalId, input.userId, oldTransaction.amount);
+  }
+  if (oldTransaction.savingsGoalId) {
+    await adjustSavingsAmount(oldTransaction.savingsGoalId, input.userId, -oldTransaction.amount);
+  }
 
   await database.runAsync(
     `update transactions
@@ -421,6 +527,14 @@ export async function updateTransaction(input: UpdateTransactionInput) {
     ]
   );
 
+  // Apply new savings effects after updating the record.
+  if (validated.fromSavingsGoalId) {
+    await adjustSavingsAmount(validated.fromSavingsGoalId, input.userId, -validated.amount);
+  }
+  if (validated.savingsGoalId) {
+    await adjustSavingsAmount(validated.savingsGoalId, input.userId, validated.amount);
+  }
+
   const payload = {
     id: input.id,
     userId: input.userId,
@@ -430,6 +544,39 @@ export async function updateTransaction(input: UpdateTransactionInput) {
 
   await enqueueSyncItem(
     buildSyncQueueItem(input.userId, 'transactions', input.id, 'update', payload)
+  );
+}
+
+export async function deleteTransaction(userId: string, transactionId: string) {
+  const database = getDatabase();
+  const updatedAt = nowIso();
+  const transaction = await getTransactionById(userId, transactionId);
+
+  if (!transaction) {
+    throw new Error('Transaction not found.');
+  }
+
+  await database.runAsync(
+    `update transactions
+     set deleted_at = ?, updated_at = ?
+     where id = ? and user_id = ? and deleted_at is null`,
+    [updatedAt, updatedAt, transactionId, userId]
+  );
+
+  if (transaction.fromSavingsGoalId) {
+    await adjustSavingsAmount(transaction.fromSavingsGoalId, userId, transaction.amount);
+  }
+  if (transaction.savingsGoalId) {
+    await adjustSavingsAmount(transaction.savingsGoalId, userId, -transaction.amount);
+  }
+
+  await enqueueSyncItem(
+    buildSyncQueueItem(userId, 'transactions', transactionId, 'delete', {
+      id: transactionId,
+      userId,
+      deletedAt: updatedAt,
+      updatedAt,
+    })
   );
 }
 

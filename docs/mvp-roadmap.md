@@ -16,8 +16,8 @@ App boots into a typed shell with tabs and working local database initialization
 
 ### Phase 2. Authentication And Session
 
-- Implement email/password auth first
-- Add Google auth if Expo flow is stable in the chosen environment
+- Implement email/password auth (primary method)
+- ~~Add Google auth~~ (abolished — email/password remains primary)
 - Create profile bootstrap after signup
 - Persist session securely
 - Add protected app shell

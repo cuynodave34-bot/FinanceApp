@@ -6,6 +6,7 @@ import { updateAccount } from '@/db/repositories/accountsRepository';
 import { createBalanceAdjustment } from '@/db/repositories/balanceAdjustmentsRepository';
 import { Account } from '@/shared/types/domain';
 import { colors } from '@/shared/theme/colors';
+import { formatAccountLabel } from '@/shared/utils/accountLabels';
 import { formatMoney } from '@/shared/utils/format';
 import { toDateKey } from '@/shared/utils/time';
 
@@ -92,6 +93,7 @@ export function BalanceConfirmationPrompt({
       type: adjustingAccount.type,
       initialBalance: newInitial,
       currency: adjustingAccount.currency,
+      isSpendable: adjustingAccount.isSpendable,
       isArchived: adjustingAccount.isArchived,
     });
 
@@ -111,9 +113,11 @@ export function BalanceConfirmationPrompt({
   }
 
   if (adjustingAccount) {
+    const adjustingAccountLabel = formatAccountLabel(adjustingAccount);
+
     return (
       <View style={styles.card}>
-        <Text style={styles.title}>Adjust {adjustingAccount.name} balance</Text>
+        <Text style={styles.title}>Adjust {adjustingAccountLabel} balance</Text>
         <Text style={styles.body}>
           Enter the actual balance you counted. We will update the account without changing
           any transactions.
@@ -142,7 +146,7 @@ export function BalanceConfirmationPrompt({
     <View style={styles.card}>
       <Text style={styles.title}>Balance check</Text>
       <Text style={styles.body}>
-        Your {promptAccount.name} balance says{' '}
+        Your {formatAccountLabel(promptAccount)} balance says{' '}
         <Text style={styles.bold}>{formatMoney(currentBalance, promptAccount.currency)}</Text>. Is
         this still correct?
       </Text>

@@ -6,13 +6,16 @@ import { Ionicons } from '@expo/vector-icons';
 import { listAccountsByUser } from '@/db/repositories/accountsRepository';
 import { listCategoriesByUser } from '@/db/repositories/categoriesRepository';
 import {
+  deleteTransaction,
   listTransactionsByUser,
   TransactionFeedItem,
 } from '@/db/repositories/transactionsRepository';
+import { ConfirmModal } from '@/shared/ui/Modal';
 import { useAuth } from '@/features/auth/provider/AuthProvider';
 import { useAppPreferences } from '@/features/preferences/provider/AppPreferencesProvider';
 import { colors, spacing, radii, shadows } from '@/shared/theme/colors';
 import { Account, Category } from '@/shared/types/domain';
+import { formatAccountLabel, formatTransactionAccountLabel } from '@/shared/utils/accountLabels';
 import {
   formatMoney,
   formatSignedMoney,
@@ -21,6 +24,7 @@ import {
 } from '@/shared/utils/format';
 import { DatePickerField } from '@/shared/ui/DateTimePickerField';
 import { isDateKey, toDateKey } from '@/shared/utils/time';
+import { CompleteLazyEntryModal } from '../components/CompleteLazyEntryModal';
 
 const ledgerTypeFilters = ['all', 'expense', 'income', 'transfer'] as const;
 const entryStateFilters = ['all', 'complete', 'incomplete'] as const;
@@ -60,6 +64,14 @@ export function TransactionsScreen() {
   const [filters, setFilters] = useState<TransactionFilters>(emptyFilters);
   const [showFilters, setShowFilters] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
+  const [isEditMode, setIsEditMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [deleteConfirm, setDeleteConfirm] = useState<{ visible: boolean; id: string | null }>({
+    visible: false,
+    id: null,
+  });
+  const [completingTransaction, setCompletingTransaction] =
+    useState<TransactionFeedItem | null>(null);
 
   const refresh = useCallback(async () => {
     if (!user) return;
@@ -88,6 +100,37 @@ export function TransactionsScreen() {
   const hasActiveFilters = checkHasActiveFilters(filters);
   const activeFilterCount = getActiveFilterCount(filters);
 
+  const exitEditMode = useCallback(() => {
+    setIsEditMode(false);
+    setSelectedIds(new Set());
+  }, []);
+
+  const handleDeleteSingle = useCallback(
+    async (id: string) => {
+      if (!user) return;
+      try {
+        await deleteTransaction(user.id, id);
+        setDeleteConfirm({ visible: false, id: null });
+        await refresh();
+      } catch (error) {
+        setStatus(error instanceof Error ? error.message : 'Failed to delete transaction.');
+      }
+    },
+    [user, refresh]
+  );
+
+  const handleBulkDelete = useCallback(async () => {
+    if (!user || selectedIds.size === 0) return;
+    try {
+      const ids = Array.from(selectedIds);
+      await Promise.all(ids.map((id) => deleteTransaction(user.id, id)));
+      exitEditMode();
+      await refresh();
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : 'Failed to delete transactions.');
+    }
+  }, [user, selectedIds, exitEditMode, refresh]);
+
   return (
     <View style={styles.screen}>
       <ScrollView
@@ -97,9 +140,23 @@ export function TransactionsScreen() {
       >
         <View style={styles.headerRow}>
           <Text style={styles.pageTitle}>Transaction Logs</Text>
-          <Pressable onPress={() => toggleBalancesHidden()} style={styles.iconButton}>
-            <Ionicons name={balancesHidden ? 'eye-off-outline' : 'eye-outline'} size={20} color={colors.ink} />
-          </Pressable>
+          <View style={styles.headerActions}>
+            <Pressable onPress={() => toggleBalancesHidden()} style={styles.iconButton}>
+              <Ionicons name={balancesHidden ? 'eye-off-outline' : 'eye-outline'} size={20} color={colors.ink} />
+            </Pressable>
+            <Pressable
+              onPress={() => {
+                if (isEditMode) {
+                  exitEditMode();
+                } else {
+                  setIsEditMode(true);
+                }
+              }}
+              style={[styles.iconButton, isEditMode && styles.iconButtonActive]}
+            >
+              <Ionicons name={isEditMode ? 'close-outline' : 'create-outline'} size={20} color={colors.ink} />
+            </Pressable>
+          </View>
         </View>
         {status ? <Text style={styles.status}>{status}</Text> : null}
 
@@ -205,7 +262,7 @@ export function TransactionsScreen() {
                         filters.accountId === account.id && styles.chipLabelActive,
                       ]}
                     >
-                      {account.name}
+                      {formatAccountLabel(account)}
                     </Text>
                   </Pressable>
                 ))}
@@ -264,6 +321,7 @@ export function TransactionsScreen() {
             <Text style={styles.cardTitle}>Transaction Logs</Text>
             <Text style={styles.resultSummary}>
               {filteredTransactions.length} {filteredTransactions.length === 1 ? 'entry' : 'entries'}
+              {isEditMode ? ` | ${selectedIds.size} selected` : ''}
             </Text>
           </View>
           {filteredTransactions.length === 0 ? (
@@ -273,46 +331,121 @@ export function TransactionsScreen() {
                 : 'No transactions recorded yet.'}
             </Text>
           ) : (
-            filteredTransactions.map((transaction) => (
-              <View key={transaction.id} style={styles.itemRow}>
-                <View style={styles.itemCopy}>
-                  <View style={styles.titleRow}>
-                    <Text style={styles.itemTitle}>
-                      {transaction.notes?.trim() || defaultTransactionTitle(transaction)}
-                    </Text>
-                    {transaction.isLazyEntry ? (
-                      <View style={styles.incompleteBadge}>
-                        <Text style={styles.incompleteBadgeText}>Incomplete</Text>
-                      </View>
-                    ) : null}
+            filteredTransactions.map((transaction) => {
+              const isSelected = selectedIds.has(transaction.id);
+              return (
+                <Pressable
+                  key={transaction.id}
+                  style={[styles.itemRow, isEditMode && isSelected && styles.itemRowSelected]}
+                  onPress={() => {
+                    if (isEditMode) {
+                      setSelectedIds((prev) => {
+                        const next = new Set(prev);
+                        if (next.has(transaction.id)) {
+                          next.delete(transaction.id);
+                        } else {
+                          next.add(transaction.id);
+                        }
+                        return next;
+                      });
+                    } else if (transaction.isLazyEntry) {
+                      setCompletingTransaction(transaction);
+                    }
+                  }}
+                  onLongPress={() => {
+                    if (!isEditMode) {
+                      setDeleteConfirm({ visible: true, id: transaction.id });
+                    }
+                  }}
+                >
+                  {isEditMode && (
+                    <View style={styles.selectionIndicator}>
+                      <Ionicons
+                        name={isSelected ? 'checkmark-circle' : 'ellipse-outline'}
+                        size={22}
+                        color={isSelected ? colors.primary : colors.border}
+                      />
+                    </View>
+                  )}
+                  <View style={styles.itemCopy}>
+                    <View style={styles.titleRow}>
+                      <Text style={styles.itemTitle}>
+                        {transaction.notes?.trim() || defaultTransactionTitle(transaction)}
+                      </Text>
+                      {transaction.isLazyEntry ? (
+                        <View style={styles.incompleteBadge}>
+                          <Text style={styles.incompleteBadgeText}>Incomplete</Text>
+                        </View>
+                      ) : null}
+                    </View>
+                    <Text style={styles.itemMeta}>{buildTransactionMeta(transaction)}</Text>
+                    <Text style={styles.itemMeta}>{formatTransactionDate(transaction.transactionAt)}</Text>
                   </View>
-                  <Text style={styles.itemMeta}>{buildTransactionMeta(transaction)}</Text>
-                  <Text style={styles.itemMeta}>{formatTransactionDate(transaction.transactionAt)}</Text>
-                </View>
-                <View style={styles.itemActionGroup}>
-                  <Text style={styles.itemAmount}>
-                    {maskFinancialValue(
-                      transaction.isLazyEntry
-                        ? formatMoney(transaction.amount)
-                        : formatTransactionAmount(transaction),
-                      balancesHidden
-                    )}
-                  </Text>
-                  <Pressable onPress={() => router.push(`/add-transaction?editId=${transaction.id}`)}>
-                    <Text style={styles.inlineAction}>
-                      {transaction.isLazyEntry ? 'Complete' : 'Edit'}
+                  <View style={styles.itemActionGroup}>
+                    <Text style={styles.itemAmount}>
+                      {maskFinancialValue(
+                        transaction.isLazyEntry
+                          ? formatMoney(transaction.amount)
+                          : formatTransactionAmount(transaction),
+                        balancesHidden
+                      )}
                     </Text>
-                  </Pressable>
-                </View>
-              </View>
-            ))
+                    {!isEditMode && (
+                      <Pressable
+                        onPress={() =>
+                          transaction.isLazyEntry
+                            ? setCompletingTransaction(transaction)
+                            : router.push(`/add-transaction?editId=${transaction.id}`)
+                        }
+                      >
+                        <Text style={styles.inlineAction}>
+                          {transaction.isLazyEntry ? 'Complete' : 'Edit'}
+                        </Text>
+                      </Pressable>
+                    )}
+                  </View>
+                </Pressable>
+              );
+            })
           )}
         </View>
+
+        <ConfirmModal
+          visible={deleteConfirm.visible}
+          title="Delete Transaction"
+          message="Are you sure you want to delete this transaction?"
+          confirmText="Delete"
+          confirmStyle="destructive"
+          onConfirm={() => {
+            if (deleteConfirm.id) {
+              handleDeleteSingle(deleteConfirm.id);
+            }
+          }}
+          onCancel={() => setDeleteConfirm({ visible: false, id: null })}
+        />
+        <CompleteLazyEntryModal
+          visible={Boolean(completingTransaction)}
+          userId={user?.id ?? ''}
+          transaction={completingTransaction}
+          onClose={() => setCompletingTransaction(null)}
+          onCompleted={() => {
+            setCompletingTransaction(null);
+            refresh().catch((error) =>
+              setStatus(error instanceof Error ? error.message : 'Failed to refresh transactions.')
+            );
+          }}
+        />
       </ScrollView>
 
-      <Pressable onPress={() => router.push('/add-transaction')} style={styles.fab}>
-        <Ionicons name="add" size={28} color={colors.surface} />
-      </Pressable>
+      {isEditMode && selectedIds.size > 0 ? (
+        <Pressable onPress={handleBulkDelete} style={styles.fabDelete}>
+          <Ionicons name="trash-outline" size={24} color={colors.surface} />
+        </Pressable>
+      ) : (
+        <Pressable onPress={() => router.push('/add-transaction')} style={styles.fab}>
+          <Ionicons name="add" size={28} color={colors.surface} />
+        </Pressable>
+      )}
     </View>
   );
 }
@@ -335,6 +468,8 @@ function matchesTransactionFilters(
       transaction.accountName,
       transaction.toAccountName,
       transaction.categoryName,
+      transaction.savingsGoalName,
+      transaction.fromSavingsGoalName,
     ]
       .filter(Boolean)
       .join(' ')
@@ -426,14 +561,17 @@ function defaultTransactionTitle(transaction: TransactionFeedItem) {
 
 function buildTransactionMeta(transaction: TransactionFeedItem) {
   if (transaction.type === 'transfer') {
-    return `${transaction.accountName ?? 'Unknown'} -> ${transaction.toAccountName ?? 'Unknown'}`;
+    const source = transaction.accountName || transaction.fromSavingsGoalName;
+    const dest = transaction.toAccountName || transaction.savingsGoalName;
+    return `${formatTransactionAccountLabel(source)} -> ${formatTransactionAccountLabel(dest)}`;
   }
 
   if (transaction.isLazyEntry) {
     return `${capitalize(transaction.type)} | Incomplete entry`;
   }
 
-  return `${transaction.accountName ?? 'Unknown'} | ${transaction.categoryName ?? 'Uncategorised'}`;
+  const sourceOrDest = transaction.accountName || transaction.fromSavingsGoalName || transaction.savingsGoalName;
+  return `${formatTransactionAccountLabel(sourceOrDest)} | ${transaction.categoryName ?? 'Uncategorised'}`;
 }
 
 function formatTransactionAmount(transaction: TransactionFeedItem) {
@@ -454,6 +592,7 @@ const styles = StyleSheet.create({
   content: { paddingHorizontal: spacing.lg, paddingTop: spacing.lg, paddingBottom: 120, gap: spacing.lg },
   headerRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   pageTitle: { fontSize: 28, fontWeight: '800', color: colors.ink },
+  headerActions: { flexDirection: 'row', gap: 8 },
   iconButton: { width: 40, height: 40, borderRadius: 20, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border, alignItems: 'center', justifyContent: 'center' },
   iconButtonActive: { borderColor: colors.primary },
   status: { color: colors.ink, fontSize: 13, lineHeight: 18, fontWeight: '600' },
@@ -479,7 +618,9 @@ const styles = StyleSheet.create({
   inlineActionsRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: 12 },
   resultSummary: { color: colors.mutedInk, fontSize: 12, fontWeight: '700' },
   emptyText: { color: colors.mutedInk, fontSize: 14, lineHeight: 20 },
-  itemRow: { flexDirection: 'row', justifyContent: 'space-between', gap: 12, paddingVertical: 10, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border },
+  itemRow: { flexDirection: 'row', justifyContent: 'space-between', gap: 12, paddingVertical: 10, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border, alignItems: 'center' },
+  itemRowSelected: { backgroundColor: colors.primaryLight },
+  selectionIndicator: { width: 28, alignItems: 'center', justifyContent: 'center' },
   itemCopy: { flex: 1, gap: 3 },
   titleRow: { flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' },
   itemTitle: { color: colors.ink, fontSize: 15, fontWeight: '700' },
@@ -515,6 +656,22 @@ const styles = StyleSheet.create({
     height: 56,
     borderRadius: 28,
     backgroundColor: colors.primary,
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: colors.shadow,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 4,
+    elevation: 6,
+  },
+  fabDelete: {
+    position: 'absolute',
+    right: spacing.lg,
+    bottom: spacing.lg,
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: colors.danger,
     alignItems: 'center',
     justifyContent: 'center',
     shadowColor: colors.shadow,

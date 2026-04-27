@@ -2,17 +2,18 @@ import {
   calculateBudgetSummaries,
   getBudgetSummaryForDate,
   calculatePendingBudgetReserve,
+  calculateUpcomingPlannedExpenses,
   BudgetSummary,
 } from './calculateBudgetSummaries';
 import { Budget, Transaction } from '@/shared/types/domain';
 
-function makeBudget(date: string, amount: number): Budget {
+function makeBudget(date: string, amount: number, carriedOverAmount = 0): Budget {
   return {
     id: 'b-' + date,
     userId: 'u1',
     budgetDate: date,
     budgetAmount: amount,
-    carriedOverAmount: 0,
+    carriedOverAmount,
     overspentAmount: 0,
     notes: null,
     deletedAt: null,
@@ -66,7 +67,7 @@ describe('calculateBudgetSummaries', () => {
     });
   });
 
-  it('carries over unused budget to the next day', () => {
+  it('does not carry over unused budget unless stored on the next day', () => {
     const budgets: Budget[] = [
       makeBudget('2026-04-25', 150),
       makeBudget('2026-04-26', 150),
@@ -78,6 +79,20 @@ describe('calculateBudgetSummaries', () => {
     const day2 = result.find((r) => r.date === '2026-04-26')!;
 
     expect(day1.remainingAmount).toBe(100);
+    expect(day2.carriedOverAmount).toBe(0);
+    expect(day2.availableToSpend).toBe(150);
+  });
+
+  it('uses the stored carry-over amount on the budget day', () => {
+    const budgets: Budget[] = [
+      makeBudget('2026-04-25', 150),
+      makeBudget('2026-04-26', 150, 100),
+    ];
+    const transactions: Transaction[] = [makeExpense('2026-04-25', 50)];
+    const result = calculateBudgetSummaries({ budgets, transactions, today: '2026-04-25' });
+
+    const day2 = result.find((r) => r.date === '2026-04-26')!;
+
     expect(day2.carriedOverAmount).toBe(100);
     expect(day2.availableToSpend).toBe(250);
   });
@@ -191,5 +206,79 @@ describe('calculatePendingBudgetReserve', () => {
       },
     ];
     expect(calculatePendingBudgetReserve(summaries, '2026-04-25')).toBe(0);
+  });
+});
+
+describe('calculateUpcomingPlannedExpenses', () => {
+  it('returns zero when no future budgets exist', () => {
+    expect(calculateUpcomingPlannedExpenses([], '2026-04-25')).toBe(0);
+  });
+
+  it('sums baseBudget of all future configured budgets', () => {
+    const summaries: BudgetSummary[] = [
+      {
+        date: '2026-04-26',
+        baseBudget: 150,
+        carriedOverAmount: 0,
+        overspentAmount: 0,
+        availableToSpend: 150,
+        spentAmount: 0,
+        remainingAmount: 150,
+        hasConfiguredBudget: true,
+      },
+      {
+        date: '2026-04-27',
+        baseBudget: 200,
+        carriedOverAmount: 0,
+        overspentAmount: 0,
+        availableToSpend: 200,
+        spentAmount: 0,
+        remainingAmount: 200,
+        hasConfiguredBudget: true,
+      },
+      {
+        date: '2026-04-25',
+        baseBudget: 100,
+        carriedOverAmount: 0,
+        overspentAmount: 0,
+        availableToSpend: 100,
+        spentAmount: 0,
+        remainingAmount: 100,
+        hasConfiguredBudget: true,
+      },
+    ];
+    expect(calculateUpcomingPlannedExpenses(summaries, '2026-04-25')).toBe(350);
+  });
+
+  it('ignores dates on or before today', () => {
+    const summaries: BudgetSummary[] = [
+      {
+        date: '2026-04-25',
+        baseBudget: 100,
+        carriedOverAmount: 0,
+        overspentAmount: 0,
+        availableToSpend: 100,
+        spentAmount: 0,
+        remainingAmount: 100,
+        hasConfiguredBudget: true,
+      },
+    ];
+    expect(calculateUpcomingPlannedExpenses(summaries, '2026-04-25')).toBe(0);
+  });
+
+  it('ignores unconfigured budget days', () => {
+    const summaries: BudgetSummary[] = [
+      {
+        date: '2026-04-26',
+        baseBudget: 0,
+        carriedOverAmount: 0,
+        overspentAmount: 0,
+        availableToSpend: 0,
+        spentAmount: 0,
+        remainingAmount: 0,
+        hasConfiguredBudget: false,
+      },
+    ];
+    expect(calculateUpcomingPlannedExpenses(summaries, '2026-04-25')).toBe(0);
   });
 });

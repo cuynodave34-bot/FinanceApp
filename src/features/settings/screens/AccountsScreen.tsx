@@ -12,6 +12,7 @@ import {
 import { useAuth } from '@/features/auth/provider/AuthProvider';
 import { colors, spacing, radii, shadows } from '@/shared/theme/colors';
 import { Account, AccountType } from '@/shared/types/domain';
+import { formatAccountLabel } from '@/shared/utils/accountLabels';
 import { formatMoney } from '@/shared/utils/format';
 
 const accountTypes: AccountType[] = ['cash', 'bank', 'e_wallet', 'other'];
@@ -88,7 +89,8 @@ export function AccountsScreen() {
   );
 
   async function handleSaveAccount() {
-    if (!user || !accountDraft.name.trim()) return;
+    if (!user) return;
+    if (accountDraft.type !== 'cash' && !accountDraft.name.trim()) return;
     try {
       const initialBalance = parseCurrencyInput(accountDraft.initialBalance);
       if (accountDraft.id) {
@@ -141,13 +143,15 @@ export function AccountsScreen() {
 
       <View style={[styles.card, shadows.small]}>
         <Text style={styles.cardTitle}>{accountDraft.id ? 'Edit Account' : 'Add Account'}</Text>
-        <TextInput
-          value={accountDraft.name}
-          onChangeText={(value) => setAccountDraft((current) => ({ ...current, name: value }))}
-          placeholder="Account name"
-          placeholderTextColor={colors.mutedInk}
-          style={styles.input}
-        />
+        {accountDraft.type !== 'cash' && (
+          <TextInput
+            value={accountDraft.name}
+            onChangeText={(value) => setAccountDraft((current) => ({ ...current, name: value }))}
+            placeholder="Account name"
+            placeholderTextColor={colors.mutedInk}
+            style={styles.input}
+          />
+        )}
         <TextInput
           value={accountDraft.initialBalance}
           onChangeText={(value) =>
@@ -178,7 +182,14 @@ export function AccountsScreen() {
                   ...current,
                   type,
                   preset: null,
-                  name: current.type === 'bank' || current.type === 'e_wallet' ? '' : current.name,
+                  name:
+                    type === 'cash'
+                      ? 'Cash'
+                      : type === 'bank' || type === 'e_wallet'
+                        ? ''
+                        : current.type === 'cash'
+                          ? ''
+                          : current.name,
                 }))
               }
               style={[styles.chip, accountDraft.type === type && styles.chipActive]}
@@ -261,7 +272,7 @@ export function AccountsScreen() {
           accounts.map((account) => (
             <View key={account.id} style={styles.itemRow}>
               <View style={styles.itemCopy}>
-                <Text style={styles.itemTitle}>{account.name}</Text>
+                <Text style={styles.itemTitle}>{formatAccountLabel(account)}</Text>
                 <Text style={styles.itemMeta}>
                   {account.type} | {account.isSpendable ? 'Spendable' : 'Non-Spendable'} | {formatMoney(account.initialBalance, account.currency)}
                   {account.isArchived ? ' | archived' : ''}

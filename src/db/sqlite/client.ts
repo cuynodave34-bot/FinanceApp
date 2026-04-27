@@ -12,6 +12,7 @@ export async function initializeDatabase() {
   }
 
   await runMigrations((statement) => database.execAsync(statement));
+  await database.execAsync('delete from ai_chat_memory;');
   initialized = true;
 
   return database;

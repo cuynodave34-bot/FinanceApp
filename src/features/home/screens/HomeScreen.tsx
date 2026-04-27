@@ -7,7 +7,7 @@ import { useSync } from '@/sync/provider/SyncProvider';
 
 import { listAccountsByUser } from '@/db/repositories/accountsRepository';
 import { listBudgetsByUser } from '@/db/repositories/budgetsRepository';
-import { listSavingsGoalsByUser } from '@/db/repositories/savingsGoalsRepository';
+import { listSavingsByUser } from '@/db/repositories/savingsGoalsRepository';
 import {
   listTransactionsByUser,
   TransactionFeedItem,
@@ -19,10 +19,12 @@ import { calculateSpendableBalance } from '@/services/balances/calculateSpendabl
 import {
   calculateBudgetSummaries,
   calculatePendingBudgetReserve,
+  calculateUpcomingPlannedExpenses,
   getBudgetSummaryForDate,
 } from '@/services/budgets/calculateBudgetSummaries';
 import { colors, shadows, spacing, radii } from '@/shared/theme/colors';
-import { Account, SavingsGoal } from '@/shared/types/domain';
+import { Account, Savings } from '@/shared/types/domain';
+import { formatAccountLabel, formatTransactionAccountLabel } from '@/shared/utils/accountLabels';
 import {
   formatDateKey,
   formatMoney,
@@ -35,14 +37,15 @@ import { BalanceConfirmationPrompt } from '@/features/home/components/BalanceCon
 import { DailyCheckIn } from '@/features/home/components/DailyCheckIn';
 import { SyncStatusBadge } from '@/features/home/components/SyncStatusBadge';
 import { calculateStreaks } from '@/services/streaks/calculateStreaks';
+import { CompleteLazyEntryModal } from '../../transactions/components/CompleteLazyEntryModal';
 
 const accountCardTones = ['purple', 'blue', 'teal', 'amber', 'rose', 'slate'] as const;
 
 const quickActions = [
-  { label: 'Add Money', icon: 'add-circle-outline' as const, route: '/transactions' },
-  { label: 'Transfer', icon: 'swap-horizontal-outline' as const, route: '/transactions' },
-  { label: 'Pay Bills', icon: 'card-outline' as const, route: '/transactions' },
-  { label: 'Fixed Deposits', icon: 'lock-closed-outline' as const, route: '/goals' },
+  { label: 'Quick Add', icon: 'add-circle-outline' as const, route: '/quick-add' },
+  { label: 'Activity', icon: 'swap-horizontal-outline' as const, route: '/transactions' },
+  { label: 'Budget', icon: 'wallet-outline' as const, route: '/budget' },
+  { label: 'Savings', icon: 'wallet-outline' as const, route: '/goals' },
 ];
 
 export function HomeScreen() {
@@ -55,8 +58,27 @@ export function HomeScreen() {
   const [budgetSummaries, setBudgetSummaries] = useState(
     calculateBudgetSummaries({ budgets: [], transactions: [], today: toDateKey(new Date()) })
   );
-  const [savingsGoals, setSavingsGoals] = useState<SavingsGoal[]>([]);
-  const [totalSavings, setTotalSavings] = useState(0);
+  const [savingsList, setSavingsList] = useState<Savings[]>([]);
+  const [completingTransaction, setCompletingTransaction] =
+    useState<TransactionFeedItem | null>(null);
+
+  const reloadHome = useCallback(() => {
+    if (!user) return Promise.resolve();
+    return Promise.all([
+      listAccountsByUser(user.id),
+      listTransactionsByUser(user.id),
+      listBudgetsByUser(user.id),
+      listSavingsByUser(user.id),
+    ]).then(([accountRows, transactionRows, budgetRows, goalRows]) => {
+      const today = toDateKey(new Date());
+      setAccounts(accountRows.filter((account) => !account.isArchived));
+      setTransactions(transactionRows);
+      setBudgetSummaries(
+        calculateBudgetSummaries({ budgets: budgetRows, transactions: transactionRows, today })
+      );
+      setSavingsList(goalRows);
+    });
+  }, [user]);
 
   useFocusEffect(
     useCallback(() => {
@@ -66,7 +88,7 @@ export function HomeScreen() {
         listAccountsByUser(user.id),
         listTransactionsByUser(user.id),
         listBudgetsByUser(user.id),
-        listSavingsGoalsByUser(user.id),
+        listSavingsByUser(user.id),
       ])
         .then(([accountRows, transactionRows, budgetRows, goalRows]) => {
           const today = toDateKey(new Date());
@@ -75,20 +97,7 @@ export function HomeScreen() {
           setBudgetSummaries(
             calculateBudgetSummaries({ budgets: budgetRows, transactions: transactionRows, today })
           );
-          setSavingsGoals(goalRows);
-          const nonSpendable = accountRows
-            .filter((a) => !a.isArchived && !a.isSpendable)
-            .reduce((sum, a) => {
-              const txSum = transactionRows.reduce((tSum, tx) => {
-                if (tx.type === 'income' && tx.accountId === a.id) return tSum + tx.amount;
-                if (tx.type === 'expense' && tx.accountId === a.id) return tSum - tx.amount;
-                if (tx.type === 'transfer' && tx.accountId === a.id) return tSum - tx.amount;
-                if (tx.type === 'transfer' && tx.toAccountId === a.id) return tSum + tx.amount;
-                return tSum;
-              }, 0);
-              return sum + a.initialBalance + txSum;
-            }, 0);
-          setTotalSavings(nonSpendable + goalRows.reduce((sum, g) => sum + g.currentAmount, 0));
+          setSavingsList(goalRows);
         })
         .catch((error) => console.warn('Failed to load home data', error));
     }, [user])
@@ -114,32 +123,31 @@ export function HomeScreen() {
     }
   }
 
-  const totalBalance = accounts.reduce(
-    (sum, account) => sum + (accountBalances.get(account.id) ?? account.initialBalance),
-    0
-  );
   const spendableTotal = accounts
     .filter((a) => a.isSpendable)
     .reduce((sum, account) => sum + (accountBalances.get(account.id) ?? account.initialBalance), 0);
   const todayBudgetSummary = getBudgetSummaryForDate(budgetSummaries, todayDateKey);
   const pendingBudgetReserve = calculatePendingBudgetReserve(budgetSummaries, todayDateKey);
-  const savingsTotal = savingsGoals.reduce((sum, g) => sum + g.currentAmount, 0);
+  const upcomingPlannedExpenses = calculateUpcomingPlannedExpenses(budgetSummaries, todayDateKey);
+  const savingsTotal = savingsList.reduce((sum: number, g: Savings) => sum + g.currentAmount, 0);
+  const spendableSavingsTotal = savingsList
+    .filter((g) => g.isSpendable)
+    .reduce((sum: number, g: Savings) => sum + g.currentAmount, 0);
+  const currentBalance = spendableTotal + spendableSavingsTotal;
   const spendableBalance = calculateSpendableBalance({
-    totalBalance: spendableTotal,
-    reservedSavings: savingsTotal,
-    upcomingPlannedExpenses: 0,
+    totalBalance: currentBalance,
+    upcomingPlannedExpenses,
     budgetReserves: pendingBudgetReserve,
   });
   const accountCards = accounts.map((account, index) => ({
     id: account.id,
-    name: account.name,
+    name: formatAccountLabel(account),
     balance: formatMoney(accountBalances.get(account.id) ?? account.initialBalance, account.currency),
     tone: accountCardTones[index % accountCardTones.length],
   }));
   const recentTransactions = transactions.filter((transaction) => !transaction.isLazyEntry);
   const lazyEntries = transactions.filter((transaction) => transaction.isLazyEntry);
   const recentPreview = recentTransactions.slice(0, 5);
-  const budgetTodayLabel = todayBudgetSummary ? formatMoney(todayBudgetSummary.availableToSpend) : homeDashboardPreview.todaysBudget;
   const spentTodayLabel = todayBudgetSummary ? formatMoney(todayBudgetSummary.spentAmount) : homeDashboardPreview.spentToday;
   const remainingTodayLabel = todayBudgetSummary ? formatMoney(todayBudgetSummary.remainingAmount) : homeDashboardPreview.remainingToday;
 
@@ -169,7 +177,7 @@ export function HomeScreen() {
           </Pressable>
         </View>
         <Text style={styles.balanceValue}>
-          {maskFinancialValue(formatMoney(totalBalance), balancesHidden)}
+          {maskFinancialValue(formatMoney(currentBalance), balancesHidden)}
         </Text>
         <View style={styles.balanceMeta}>
           <SyncStatusBadge />
@@ -193,15 +201,29 @@ export function HomeScreen() {
       </View>
 
       {/* AI Assistant Banner */}
-      <Pressable onPress={() => router.push('/ai')} style={[styles.aiBanner, shadows.small]}>
-        <View style={styles.aiBannerIcon}>
-          <Ionicons name="sparkles" size={20} color={colors.primary} />
-        </View>
-        <View style={styles.aiBannerText}>
+      <Pressable
+        onPress={() => router.push('/ai')}
+        style={[styles.aiBanner, shadows.small]}
+      >
+        <Ionicons name="sparkles" size={28} color={colors.primary} />
+        <View style={styles.aiTextColumn}>
           <Text style={styles.aiBannerTitle}>Ask Penny</Text>
-          <Text style={styles.aiBannerSubtitle}>Chat with your AI financial assistant</Text>
+          <Text style={styles.aiBannerSubtitle}>AI-powered money insights</Text>
         </View>
-        <Ionicons name="chevron-forward" size={18} color={colors.mutedInk} />
+        <Ionicons name="chevron-forward" size={20} color={colors.mutedInk} />
+      </Pressable>
+
+      {/* Calendar */}
+      <Pressable
+        onPress={() => router.push('/calendar')}
+        style={[styles.calendarBanner, shadows.small]}
+      >
+        <Ionicons name="calendar-outline" size={24} color={colors.primary} />
+        <View style={styles.aiTextColumn}>
+          <Text style={styles.aiBannerTitle}>Calendar</Text>
+          <Text style={styles.aiBannerSubtitle}>Plan budgets by day or week</Text>
+        </View>
+        <Ionicons name="chevron-forward" size={20} color={colors.mutedInk} />
       </Pressable>
 
       <DailyCheckIn />
@@ -216,26 +238,14 @@ export function HomeScreen() {
             listAccountsByUser(user.id),
             listTransactionsByUser(user.id),
             listBudgetsByUser(user.id),
-            listSavingsGoalsByUser(user.id),
+            listSavingsByUser(user.id),
           ])
             .then(([accountRows, transactionRows, budgetRows, goalRows]) => {
               const today = toDateKey(new Date());
               setAccounts(accountRows.filter((account) => !account.isArchived));
               setTransactions(transactionRows);
               setBudgetSummaries(calculateBudgetSummaries({ budgets: budgetRows, transactions: transactionRows, today }));
-              const nonSpendable = accountRows
-                .filter((a) => !a.isArchived && !a.isSpendable)
-                .reduce((sum, a) => {
-                  const txSum = transactionRows.reduce((tSum, tx) => {
-                    if (tx.type === 'income' && tx.accountId === a.id) return tSum + tx.amount;
-                    if (tx.type === 'expense' && tx.accountId === a.id) return tSum - tx.amount;
-                    if (tx.type === 'transfer' && tx.accountId === a.id) return tSum - tx.amount;
-                    if (tx.type === 'transfer' && tx.toAccountId === a.id) return tSum + tx.amount;
-                    return tSum;
-                  }, 0);
-                  return sum + a.initialBalance + txSum;
-                }, 0);
-              setTotalSavings(nonSpendable + goalRows.reduce((sum, g) => sum + g.currentAmount, 0));
+              setSavingsList(goalRows);
             })
             .catch((error) => console.warn('Failed to reload after balance adjustment', error));
         }}
@@ -265,8 +275,8 @@ export function HomeScreen() {
       {/* Stat Grid */}
       <View style={styles.statGrid}>
         <StatBox label="Safe to Spend" value={maskFinancialValue(formatMoney(spendableBalance), balancesHidden)} accent="success" />
-        <StatBox label="Savings" value={maskFinancialValue(formatMoney(totalSavings), balancesHidden)} accent="info" />
-        <StatBox label="Today's Budget" value={maskFinancialValue(budgetTodayLabel, balancesHidden)} accent="warning" />
+        <StatBox label="Savings" value={maskFinancialValue(formatMoney(savingsTotal), balancesHidden)} accent="info" />
+        <StatBox label="Today's Budget" value={maskFinancialValue(remainingTodayLabel, balancesHidden)} accent="warning" />
         <StatBox label="Spent Today" value={maskFinancialValue(spentTodayLabel, balancesHidden)} accent="danger" />
       </View>
 
@@ -284,7 +294,7 @@ export function HomeScreen() {
           <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.cardsScroll}>
             {accountCards.map((account) => (
               <View key={account.id} style={[styles.accountCard, { backgroundColor: colors.accountCard[account.tone as keyof typeof colors.accountCard] ?? colors.accountCard.purple }]}>
-                <Text style={styles.accountCardName}>{account.name}</Text>
+                <Text style={styles.accountCardName} numberOfLines={1}>{account.name}</Text>
                 <Text style={styles.accountCardBalance}>{maskFinancialValue(account.balance, balancesHidden)}</Text>
               </View>
             ))}
@@ -337,7 +347,11 @@ export function HomeScreen() {
           </View>
           <View style={[styles.transactionsCard, shadows.small]}>
             {lazyEntries.slice(0, 3).map((transaction) => (
-              <View key={transaction.id} style={styles.txRow}>
+              <Pressable
+                key={transaction.id}
+                style={styles.txRow}
+                onPress={() => setCompletingTransaction(transaction)}
+              >
                 <View style={[styles.txIcon, { backgroundColor: colors.warningLight }]}>
                   <Ionicons name="time-outline" size={16} color={colors.warning} />
                 </View>
@@ -346,11 +360,21 @@ export function HomeScreen() {
                   <Text style={styles.txMeta}>{formatTransactionDate(transaction.transactionAt)}</Text>
                 </View>
                 <Text style={styles.txValue}>{maskFinancialValue(formatMoney(transaction.amount), balancesHidden)}</Text>
-              </View>
+              </Pressable>
             ))}
           </View>
         </View>
       ) : null}
+      <CompleteLazyEntryModal
+        visible={Boolean(completingTransaction)}
+        userId={user?.id ?? ''}
+        transaction={completingTransaction}
+        onClose={() => setCompletingTransaction(null)}
+        onCompleted={() => {
+          setCompletingTransaction(null);
+          reloadHome().catch((error) => console.warn('Failed to refresh home data', error));
+        }}
+      />
     </ScrollView>
   );
 }
@@ -378,9 +402,13 @@ function defaultTransactionTitle(transaction: TransactionFeedItem) {
 
 function buildTransactionMeta(transaction: TransactionFeedItem) {
   if (transaction.type === 'transfer') {
-    return `${transaction.accountName ?? 'Unknown'} → ${transaction.toAccountName ?? 'Unknown'}`;
+    return `${formatTransactionAccountLabel(transaction.accountName || transaction.fromSavingsGoalName)} → ${formatTransactionAccountLabel(transaction.toAccountName || transaction.savingsGoalName)}`;
   }
-  return `${transaction.accountName ?? 'Unknown'} · ${transaction.categoryName ?? 'Uncategorised'}`;
+  const sourceName =
+    transaction.type === 'income'
+      ? transaction.accountName || transaction.savingsGoalName
+      : transaction.accountName || transaction.fromSavingsGoalName;
+  return `${formatTransactionAccountLabel(sourceName)} · ${transaction.categoryName ?? 'Uncategorised'}`;
 }
 
 function formatTransactionAmount(transaction: TransactionFeedItem) {
@@ -410,9 +438,10 @@ const styles = StyleSheet.create({
 
   aiBanner: { flexDirection: 'row', alignItems: 'center', gap: spacing.md, backgroundColor: colors.surface, borderRadius: radii.xl, padding: spacing.lg, borderWidth: 1, borderColor: colors.border },
   aiBannerIcon: { width: 44, height: 44, borderRadius: 14, backgroundColor: colors.primaryLight, alignItems: 'center', justifyContent: 'center' },
-  aiBannerText: { flex: 1, gap: 2 },
+  aiTextColumn: { flex: 1, gap: 2 },
   aiBannerTitle: { fontSize: 15, fontWeight: '700', color: colors.ink },
   aiBannerSubtitle: { fontSize: 13, color: colors.mutedInk },
+  calendarBanner: { flexDirection: 'row', alignItems: 'center', gap: spacing.md, backgroundColor: colors.surface, borderRadius: radii.xl, padding: spacing.lg, borderWidth: 1, borderColor: colors.border },
 
   streakRow: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
   streakChip: { flexDirection: 'row', alignItems: 'center', gap: spacing.xs, borderRadius: radii.md, paddingHorizontal: spacing.sm, paddingVertical: 6 },

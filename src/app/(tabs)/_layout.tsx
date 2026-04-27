@@ -8,7 +8,7 @@ const tabIcons: Record<string, { active: keyof typeof Ionicons.glyphMap; inactiv
   index: { active: 'home', inactive: 'home-outline' },
   transactions: { active: 'swap-horizontal', inactive: 'swap-horizontal-outline' },
   analytics: { active: 'bar-chart', inactive: 'bar-chart-outline' },
-  goals: { active: 'trophy', inactive: 'trophy-outline' },
+  goals: { active: 'wallet', inactive: 'wallet-outline' },
   menu: { active: 'grid', inactive: 'grid-outline' },
 };
 
@@ -55,7 +55,7 @@ export default function TabLayout() {
       <Tabs.Screen name="index" options={{ title: 'Home' }} />
       <Tabs.Screen name="transactions" options={{ title: 'Activity' }} />
       <Tabs.Screen name="analytics" options={{ title: 'Analytics' }} />
-      <Tabs.Screen name="goals" options={{ title: 'Goals' }} />
+      <Tabs.Screen name="goals" options={{ title: 'Savings' }} />
       <Tabs.Screen name="menu" options={{ title: 'More' }} />
       <Tabs.Screen name="budget" options={{ href: null }} />
       <Tabs.Screen name="calendar" options={{ href: null }} />

@@ -86,10 +86,10 @@ export function calculateReportsSummary({
       transaction.categoryName ?? 'Uncategorised'
     ),
     spendingByAccount: buildTotals(expenseTransactions, (transaction) =>
-      transaction.accountName ?? 'Unknown account'
+      transaction.accountName || transaction.fromSavingsGoalName || 'Unknown account'
     ),
     incomeByAccount: buildTotals(incomeTransactions, (transaction) =>
-      transaction.accountName ?? 'Unknown account'
+      transaction.accountName || transaction.savingsGoalName || 'Unknown account'
     ),
     biggestExpenses: expenseTransactions
       .slice()
@@ -194,10 +194,12 @@ function toExpenseRow(transaction: TransactionFeedItem): ReportExpenseRow {
       transaction.notes?.trim() ||
       transaction.categoryName ||
       transaction.accountName ||
+      transaction.fromSavingsGoalName ||
+      transaction.savingsGoalName ||
       'Expense',
     amount: transaction.amount,
     date: toDateKey(transaction.transactionAt),
-    accountLabel: transaction.accountName ?? 'Unknown account',
+    accountLabel: transaction.accountName || transaction.fromSavingsGoalName || transaction.savingsGoalName || 'Unknown account',
     categoryLabel: transaction.categoryName ?? 'Uncategorised',
     isImpulse: transaction.isImpulse,
   };

@@ -76,14 +76,19 @@ export type Reminder = {
   updatedAt: string;
 };
 
-export type SavingsGoal = {
+export type InterestPeriod = 'daily' | 'weekly' | 'monthly' | 'quarterly' | 'semi_annual' | 'annual';
+
+export type Savings = {
   id: string;
   userId: string;
   name: string;
-  targetAmount?: number | null;
   currentAmount: number;
-  accountId?: string | null;
-  isGeneralSavings: boolean;
+  interestRate: number;
+  interestPeriod: InterestPeriod;
+  minimumBalanceForInterest: number;
+  withholdingTaxRate: number;
+  maintainingBalance: number;
+  isSpendable: boolean;
   deletedAt?: string | null;
   createdAt: string;
   updatedAt: string;

@@ -14,10 +14,10 @@ import { useAuth } from '@/features/auth/provider/AuthProvider';
 import { useAppPreferences } from '@/features/preferences/provider/AppPreferencesProvider';
 import { DatePickerField } from '@/shared/ui/DateTimePickerField';
 import {
-  listSavingsGoalsByUser,
-  createSavingsGoal,
-  updateSavingsGoal,
-  deleteSavingsGoal,
+  listSavingsByUser,
+  createSavings,
+  updateSavings,
+  deleteSavings,
 } from '@/db/repositories/savingsGoalsRepository';
 import {
   listDebtsByUser,
@@ -28,16 +28,43 @@ import {
 } from '@/db/repositories/debtsRepository';
 import { createTransaction } from '@/db/repositories/transactionsRepository';
 import { listAccountsByUser } from '@/db/repositories/accountsRepository';
-import { SavingsGoal, Debt, Account, DebtType, DebtStatus } from '@/shared/types/domain';
+import { Savings, InterestPeriod, Debt, Account, DebtType, DebtStatus } from '@/shared/types/domain';
 import { colors, spacing, radii, shadows } from '@/shared/theme/colors';
+import { formatAccountLabel } from '@/shared/utils/accountLabels';
 import { formatMoney, maskFinancialValue } from '@/shared/utils/format';
 import { ConfirmModal, InfoModal } from '@/shared/ui/Modal';
+
+type SavingsDraft = {
+  id: string;
+  name: string;
+  currentAmount: string;
+  interestRate: string;
+  interestPeriod: InterestPeriod;
+  minimumBalanceForInterest: string;
+  withholdingTaxRate: string;
+  maintainingBalance: string;
+  isSpendable: boolean;
+};
+
+function createEmptySavingsDraft(): SavingsDraft {
+  return {
+    id: '',
+    name: '',
+    currentAmount: '',
+    interestRate: '',
+    interestPeriod: 'quarterly',
+    minimumBalanceForInterest: '',
+    withholdingTaxRate: '',
+    maintainingBalance: '',
+    isSpendable: false,
+  };
+}
 
 export function GoalsScreen() {
   const { user } = useAuth();
   const router = useRouter();
   const { balancesHidden, toggleBalancesHidden } = useAppPreferences();
-  const [goals, setGoals] = useState<SavingsGoal[]>([]);
+  const [savingsList, setSavingsList] = useState<Savings[]>([]);
   const [debts, setDebts] = useState<Debt[]>([]);
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [status, setStatus] = useState<string | null>(null);
@@ -60,13 +87,7 @@ export function GoalsScreen() {
   }>({ visible: false, debt: null, selectedAccountId: '' });
 
   const [showForm, setShowForm] = useState(false);
-  const [savingsDraft, setSavingsDraft] = useState({
-    id: '',
-    name: '',
-    targetAmount: '',
-    currentAmount: '',
-    isGeneralSavings: false,
-  });
+  const [savingsDraft, setSavingsDraft] = useState<SavingsDraft>(createEmptySavingsDraft);
   const [debtDraft, setDebtDraft] = useState({
     id: '',
     name: '',
@@ -79,73 +100,56 @@ export function GoalsScreen() {
 
   const refresh = useCallback(async () => {
     if (!user) return;
-    const [goalRows, debtRows, accountRows] = await Promise.all([
-      listSavingsGoalsByUser(user.id),
+    const [savingsRows, debtRows, accountRows] = await Promise.all([
+      listSavingsByUser(user.id),
       listDebtsByUser(user.id),
       listAccountsByUser(user.id),
     ]);
-    setGoals(goalRows);
+    setSavingsList(savingsRows);
     setDebts(debtRows);
-    setAccounts(accountRows.filter((a) => !a.isArchived));
+    setAccounts(accountRows.filter((a: Account) => !a.isArchived));
   }, [user]);
 
   useFocusEffect(
     useCallback(() => {
       refresh().catch((error) => {
-        setStatus(error instanceof Error ? error.message : 'Failed to load goals.');
+        setStatus(error instanceof Error ? error.message : 'Failed to load savings.');
       });
     }, [refresh])
   );
 
   function resetSavingsDraft() {
-    setSavingsDraft({ id: '', name: '', targetAmount: '', currentAmount: '', isGeneralSavings: false });
+    setSavingsDraft(createEmptySavingsDraft());
   }
 
   function resetDebtDraft() {
     setDebtDraft({ id: '', name: '', debtType: 'borrowed', totalAmount: '', paidAmount: '', dueDate: '', notes: '' });
   }
 
-  function detectMilestone(name: string, previous: SavingsGoal | undefined, current: SavingsGoal) {
-    if (!current.targetAmount || current.targetAmount <= 0) return;
-    const prevProgress = previous ? previous.currentAmount / current.targetAmount : 0;
-    const currProgress = current.currentAmount / current.targetAmount;
-    if (currProgress >= 1 && prevProgress < 1) {
-      setInfoModal({ visible: true, title: 'Goal reached!', message: `You reached your target for "${name}". Great job saving!` });
-    } else if (currProgress >= 0.75 && prevProgress < 0.75) {
-      setInfoModal({ visible: true, title: 'Milestone: 75%', message: `You're 75% of the way to "${name}". Keep it up!` });
-    } else if (currProgress >= 0.5 && prevProgress < 0.5) {
-      setInfoModal({ visible: true, title: 'Milestone: 50%', message: `Halfway to "${name}". Nice progress!` });
-    } else if (currProgress >= 0.25 && prevProgress < 0.25) {
-      setInfoModal({ visible: true, title: 'Milestone: 25%', message: `25% toward "${name}". Every peso counts!` });
-    }
-  }
-
-  async function handleSaveSavingsGoal() {
+  async function handleSaveSavings() {
     if (!user) return;
     try {
       const input = {
         userId: user.id,
         name: savingsDraft.name,
-        targetAmount: savingsDraft.targetAmount ? Number(savingsDraft.targetAmount) : null,
         currentAmount: Number(savingsDraft.currentAmount || '0'),
-        isGeneralSavings: savingsDraft.isGeneralSavings,
+        interestRate: Number(savingsDraft.interestRate || '0'),
+        interestPeriod: savingsDraft.interestPeriod,
+        minimumBalanceForInterest: Number(savingsDraft.minimumBalanceForInterest || '0'),
+        withholdingTaxRate: Number(savingsDraft.withholdingTaxRate || '0'),
+        maintainingBalance: Number(savingsDraft.maintainingBalance || '0'),
+        isSpendable: savingsDraft.isSpendable,
       };
-      const previous = goals.find((g) => g.id === savingsDraft.id);
-      let savedGoal: SavingsGoal | undefined;
       if (savingsDraft.id) {
-        await updateSavingsGoal({ id: savingsDraft.id, ...input });
-        savedGoal = { ...previous!, ...input, updatedAt: new Date().toISOString() };
+        await updateSavings({ id: savingsDraft.id, ...input });
       } else {
-        savedGoal = await createSavingsGoal(input);
-      }
-      if (savedGoal) {
-        detectMilestone(savedGoal.name, previous, savedGoal);
+        await createSavings(input);
       }
       resetSavingsDraft();
       await refresh();
-      setStatus('Savings goal saved.');
+      setStatus('Savings saved.');
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : 'Failed to save goal.');
+      setStatus(error instanceof Error ? error.message : 'Failed to save savings.');
     }
   }
 
@@ -176,14 +180,14 @@ export function GoalsScreen() {
     }
   }
 
-  function confirmDeleteGoal(id: string) {
+  function confirmDeleteSavings(id: string) {
     setConfirmModal({
       visible: true,
-      title: 'Delete goal?',
+      title: 'Delete savings?',
       message: 'This cannot be undone.',
       onConfirm: async () => {
         if (!user) return;
-        await deleteSavingsGoal(id, user.id);
+        await deleteSavings(id, user.id);
         await refresh();
       },
     });
@@ -202,13 +206,17 @@ export function GoalsScreen() {
     });
   }
 
-  function startEditGoal(goal: SavingsGoal) {
+  function startEditSavings(savings: Savings) {
     setSavingsDraft({
-      id: goal.id,
-      name: goal.name,
-      targetAmount: goal.targetAmount ? String(goal.targetAmount) : '',
-      currentAmount: String(goal.currentAmount),
-      isGeneralSavings: goal.isGeneralSavings,
+      id: savings.id,
+      name: savings.name,
+      currentAmount: String(savings.currentAmount),
+      interestRate: String(savings.interestRate ?? ''),
+      interestPeriod: savings.interestPeriod,
+      minimumBalanceForInterest: String(savings.minimumBalanceForInterest ?? ''),
+      withholdingTaxRate: String(savings.withholdingTaxRate ?? ''),
+      maintainingBalance: String(savings.maintainingBalance ?? ''),
+      isSpendable: savings.isSpendable,
     });
     setShowForm(true);
   }
@@ -258,11 +266,11 @@ export function GoalsScreen() {
     }
   }
 
-  const filteredGoals = useMemo(() => {
+  const filteredSavings = useMemo(() => {
     const q = query.trim().toLowerCase();
-    if (!q) return goals;
-    return goals.filter((g) => g.name.toLowerCase().includes(q));
-  }, [goals, query]);
+    if (!q) return savingsList;
+    return savingsList.filter((s) => s.name.toLowerCase().includes(q));
+  }, [savingsList, query]);
 
   const filteredDebts = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -275,18 +283,20 @@ export function GoalsScreen() {
     );
   }, [debts, query]);
 
-  const totalSaved = goals.reduce((sum, g) => sum + g.currentAmount, 0);
-  const totalTarget = goals.reduce((sum, g) => sum + (g.targetAmount ?? 0), 0);
-  const totalDebt = debts.reduce((sum, d) => sum + d.totalAmount, 0);
-  const totalPaid = debts.reduce((sum, d) => sum + d.paidAmount, 0);
+  const totalSaved = savingsList.reduce((sum: number, s: Savings) => sum + s.currentAmount, 0);
+  const totalInterest = savingsList.length > 0
+    ? savingsList.reduce((sum: number, s: Savings) => sum + s.interestRate, 0) / savingsList.length
+    : 0;
+  const totalDebt = debts.reduce((sum: number, d: Debt) => sum + d.totalAmount, 0);
+  const totalPaid = debts.reduce((sum: number, d: Debt) => sum + d.paidAmount, 0);
 
-  const listData = activeTab === 'savings' ? filteredGoals : filteredDebts;
+  const listData = activeTab === 'savings' ? filteredSavings : filteredDebts;
 
   return (
     <View style={styles.screen}>
       <ScrollView style={styles.scroll} contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
         <View style={styles.headerRow}>
-          <Text style={styles.pageTitle}>Goals & Debt</Text>
+          <Text style={styles.pageTitle}>Savings & Debt</Text>
           <Pressable onPress={() => toggleBalancesHidden()} style={styles.iconButton}>
             <Ionicons name={balancesHidden ? 'eye-off-outline' : 'eye-outline'} size={20} color={colors.ink} />
           </Pressable>
@@ -312,7 +322,7 @@ export function GoalsScreen() {
             {activeTab === 'savings' ? (
               <>
                 <SummaryBox label="Total Saved" value={maskFinancialValue(formatMoney(totalSaved), balancesHidden)} accent="success" />
-                <SummaryBox label="Total Target" value={maskFinancialValue(formatMoney(totalTarget), balancesHidden)} accent="info" />
+                <SummaryBox label="Avg Rate" value={`${totalInterest.toFixed(2)}%`} accent="info" />
               </>
             ) : (
               <>
@@ -347,8 +357,8 @@ export function GoalsScreen() {
             <Text style={styles.cardTitle}>
               {activeTab === 'savings'
                 ? savingsDraft.id
-                  ? 'Edit Goal'
-                  : 'New Goal'
+                  ? 'Edit Savings'
+                  : 'New Savings'
                 : debtDraft.id
                   ? 'Edit Debt'
                   : 'New Debt'}
@@ -357,18 +367,10 @@ export function GoalsScreen() {
               <>
                 <TextInput
                   style={styles.input}
-                  placeholder="Goal name"
+                  placeholder="Savings account name"
                   placeholderTextColor={colors.mutedInk}
                   value={savingsDraft.name}
                   onChangeText={(text) => setSavingsDraft((prev) => ({ ...prev, name: text }))}
-                />
-                <TextInput
-                  style={styles.input}
-                  placeholder="Target amount (optional)"
-                  placeholderTextColor={colors.mutedInk}
-                  keyboardType="decimal-pad"
-                  value={savingsDraft.targetAmount}
-                  onChangeText={(text) => setSavingsDraft((prev) => ({ ...prev, targetAmount: text }))}
                 />
                 <TextInput
                   style={styles.input}
@@ -378,8 +380,76 @@ export function GoalsScreen() {
                   value={savingsDraft.currentAmount}
                   onChangeText={(text) => setSavingsDraft((prev) => ({ ...prev, currentAmount: text }))}
                 />
+                <Text style={styles.subLabel}>Interest rate per annum (%)</Text>
+                <TextInput
+                  style={styles.input}
+                  placeholder="e.g. 0.125"
+                  placeholderTextColor={colors.mutedInk}
+                  keyboardType="decimal-pad"
+                  value={savingsDraft.interestRate}
+                  onChangeText={(text) => setSavingsDraft((prev) => ({ ...prev, interestRate: text }))}
+                />
+                <Text style={styles.subLabel}>Minimum balance to earn interest</Text>
+                <TextInput
+                  style={styles.input}
+                  placeholder="e.g. 10000"
+                  placeholderTextColor={colors.mutedInk}
+                  keyboardType="decimal-pad"
+                  value={savingsDraft.minimumBalanceForInterest}
+                  onChangeText={(text) => setSavingsDraft((prev) => ({ ...prev, minimumBalanceForInterest: text }))}
+                />
+                <Text style={styles.subLabel}>Withholding tax rate (%)</Text>
+                <TextInput
+                  style={styles.input}
+                  placeholder="e.g. 20"
+                  placeholderTextColor={colors.mutedInk}
+                  keyboardType="decimal-pad"
+                  value={savingsDraft.withholdingTaxRate}
+                  onChangeText={(text) => setSavingsDraft((prev) => ({ ...prev, withholdingTaxRate: text }))}
+                />
+                <Text style={styles.subLabel}>Interest crediting period</Text>
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.periodChips}>
+                  {(['daily', 'weekly', 'monthly', 'quarterly', 'semi_annual', 'annual'] as InterestPeriod[]).map((period) => (
+                    <Pressable
+                      key={period}
+                      onPress={() => setSavingsDraft((prev) => ({ ...prev, interestPeriod: period }))}
+                      style={[styles.chip, savingsDraft.interestPeriod === period && styles.chipActive]}
+                    >
+                      <Text style={[styles.chipLabel, savingsDraft.interestPeriod === period && styles.chipLabelActive]}>
+                        {period.charAt(0).toUpperCase() + period.slice(1).replace('_', ' ')}
+                      </Text>
+                    </Pressable>
+                  ))}
+                </ScrollView>
+                <Text style={styles.subLabel}>Initial deposit / maintaining ADB</Text>
+                <TextInput
+                  style={styles.input}
+                  placeholder="e.g. 5000"
+                  placeholderTextColor={colors.mutedInk}
+                  keyboardType="decimal-pad"
+                  value={savingsDraft.maintainingBalance}
+                  onChangeText={(text) => setSavingsDraft((prev) => ({ ...prev, maintainingBalance: text }))}
+                />
+                <Text style={styles.subLabel}>Spendable</Text>
+                <View style={styles.chipRow}>
+                  {(['spendable', 'non-spendable'] as const).map((option) => {
+                    const isSpendable = option === 'spendable';
+                    const active = savingsDraft.isSpendable === isSpendable;
+                    return (
+                      <Pressable
+                        key={option}
+                        onPress={() => setSavingsDraft((prev) => ({ ...prev, isSpendable: isSpendable }))}
+                        style={[styles.chip, active && styles.chipActive]}
+                      >
+                        <Text style={[styles.chipLabel, active && styles.chipLabelActive]}>
+                          {isSpendable ? 'Spendable' : 'Non-spendable'}
+                        </Text>
+                      </Pressable>
+                    );
+                  })}
+                </View>
                 <View style={styles.actionRow}>
-                  <Pressable onPress={handleSaveSavingsGoal} style={styles.primaryButton}>
+                  <Pressable onPress={handleSaveSavings} style={styles.primaryButton}>
                     <Text style={styles.primaryButtonLabel}>Save</Text>
                   </Pressable>
                   <Pressable onPress={() => { resetSavingsDraft(); setShowForm(false); }} style={styles.secondaryButton}>
@@ -445,30 +515,40 @@ export function GoalsScreen() {
         )}
 
         {/* List */}
-        <View style={[styles.card, shadows.small]}>
-          <View style={styles.logHeaderRow}>
-            <Text style={styles.cardTitle}>{activeTab === 'savings' ? 'Your Goals' : 'Your Debts'}</Text>
-            <Text style={styles.resultSummary}>
-              {listData.length} {listData.length === 1 ? 'entry' : 'entries'}
-            </Text>
-          </View>
-          {listData.length === 0 ? (
-            <Text style={styles.emptyText}>
-              {query
-                ? `No ${activeTab} match the search.`
-                : `No ${activeTab} recorded yet.`}
-            </Text>
-          ) : (
-            listData.map((item) =>
-              activeTab === 'savings' ? (
-                <SavingsGoalRow
-                  key={item.id}
-                  goal={item as SavingsGoal}
-                  balancesHidden={balancesHidden}
-                  onPress={() => startEditGoal(item as SavingsGoal)}
-                  onLongPress={() => confirmDeleteGoal(item.id)}
-                />
-              ) : (
+        {activeTab === 'savings' ? (
+          <>
+            {filteredSavings.length === 0 ? (
+              <Text style={styles.emptyText}>
+                {query ? 'No savings match the search.' : 'No savings recorded yet.'}
+              </Text>
+            ) : (
+              <View style={styles.savingsList}>
+                {filteredSavings.map((s) => (
+                  <SavingsCard
+                    key={s.id}
+                    savings={s}
+                    balancesHidden={balancesHidden}
+                    onPress={() => startEditSavings(s)}
+                    onLongPress={() => confirmDeleteSavings(s.id)}
+                  />
+                ))}
+              </View>
+            )}
+          </>
+        ) : (
+          <View style={[styles.card, shadows.small]}>
+            <View style={styles.logHeaderRow}>
+              <Text style={styles.cardTitle}>Your Debts</Text>
+              <Text style={styles.resultSummary}>
+                {listData.length} {listData.length === 1 ? 'entry' : 'entries'}
+              </Text>
+            </View>
+            {filteredDebts.length === 0 ? (
+              <Text style={styles.emptyText}>
+                {query ? 'No debts match the search.' : 'No debts recorded yet.'}
+              </Text>
+            ) : (
+              filteredDebts.map((item) => (
                 <DebtRow
                   key={item.id}
                   debt={item as Debt}
@@ -477,10 +557,10 @@ export function GoalsScreen() {
                   onLongPress={() => confirmDeleteDebt(item.id)}
                   onPaid={() => openPaidModal(item as Debt)}
                 />
-              )
-            )
-          )}
-        </View>
+              ))
+            )}
+          </View>
+        )}
       </ScrollView>
 
       {/* FAB */}
@@ -519,7 +599,7 @@ export function GoalsScreen() {
                   style={[styles.chip, paidModal.selectedAccountId === account.id && styles.chipActive]}
                 >
                   <Text style={[styles.chipLabel, paidModal.selectedAccountId === account.id && styles.chipLabelActive]}>
-                    {account.name}
+                    {formatAccountLabel(account)}
                   </Text>
                 </Pressable>
               ))}
@@ -561,33 +641,126 @@ export function GoalsScreen() {
   );
 }
 
-function SavingsGoalRow({
+function SavingsCard({
+  savings,
+  balancesHidden,
+  onPress,
+  onLongPress,
+}: {
+  savings: Savings;
+  balancesHidden: boolean;
+  onPress: () => void;
+  onLongPress: () => void;
+}) {
+  const earnsInterest =
+    savings.interestRate > 0 &&
+    savings.currentAmount >= savings.minimumBalanceForInterest;
+
+  return (
+    <Pressable onPress={onPress} onLongPress={onLongPress} style={[styles.savingsProductCard, shadows.small]}>
+      <View style={styles.savingsProductHeader}>
+        <View style={styles.savingsProductCopy}>
+          <Text style={styles.savingsProductName}>{savings.name}</Text>
+          <Text style={styles.savingsProductBalance}>
+            {maskFinancialValue(formatMoney(savings.currentAmount), balancesHidden)}
+          </Text>
+        </View>
+        <View style={[styles.savingsStatusBadge, earnsInterest ? styles.savingsStatusActive : styles.savingsStatusInactive]}>
+          <Text style={[styles.savingsStatusText, earnsInterest ? styles.savingsStatusTextActive : styles.savingsStatusTextInactive]}>
+            {earnsInterest ? 'Earning interest' : 'Below threshold'}
+          </Text>
+        </View>
+      </View>
+
+      <View style={styles.savingsDetailTable}>
+        <SavingsDetailRow
+          label="Interest rate"
+          value={savings.interestRate > 0 ? `${formatPercent(savings.interestRate)} per annum` : 'No interest'}
+        />
+        <SavingsDetailRow
+          label="Minimum balance to earn interest"
+          value={formatMoney(savings.minimumBalanceForInterest)}
+          hidden={balancesHidden}
+        />
+        <SavingsDetailRow
+          label="Tax"
+          value={
+            savings.withholdingTaxRate > 0
+              ? `Subject to ${formatPercent(savings.withholdingTaxRate)} withholding tax`
+              : 'No withholding tax recorded'
+          }
+        />
+        <SavingsDetailRow
+          label="Interest crediting period"
+          value={formatInterestPeriod(savings.interestPeriod)}
+        />
+        <SavingsDetailRow
+          label="Initial deposit / maintaining ADB"
+          value={formatMoney(savings.maintainingBalance)}
+          hidden={balancesHidden}
+        />
+        <SavingsDetailRow
+          label="Safe to spend treatment"
+          value={savings.isSpendable ? 'Included in spendable funds' : 'Locked from spendable funds'}
+        />
+      </View>
+    </Pressable>
+  );
+}
+
+function SavingsDetailRow({
+  label,
+  value,
+  hidden,
+}: {
+  label: string;
+  value: string;
+  hidden?: boolean;
+}) {
+  return (
+    <View style={styles.savingsDetailRow}>
+      <Text style={styles.savingsDetailLabel}>{label}</Text>
+      <Text style={styles.savingsDetailValue}>{hidden ? 'Hidden' : value}</Text>
+    </View>
+  );
+}
+
+function formatPercent(value: number) {
+  return `${Number(value.toFixed(4)).toString()}%`;
+}
+
+function formatInterestPeriod(period: InterestPeriod) {
+  const labels: Record<InterestPeriod, string> = {
+    daily: 'Daily',
+    weekly: 'Weekly',
+    monthly: 'Monthly',
+    quarterly: 'Quarterly',
+    semi_annual: 'Semi-annual',
+    annual: 'Annual',
+  };
+
+  return labels[period];
+}
+
+function SavingsRow({
   goal,
   balancesHidden,
   onPress,
   onLongPress,
 }: {
-  goal: SavingsGoal;
+  goal: Savings;
   balancesHidden: boolean;
   onPress: () => void;
   onLongPress: () => void;
 }) {
-  const progress = goal.targetAmount ? Math.min(1, goal.currentAmount / goal.targetAmount) : 0;
   return (
     <Pressable onPress={onPress} onLongPress={onLongPress} style={styles.goalRow}>
       <View style={styles.goalInfo}>
         <View style={styles.goalHeader}>
           <Text style={styles.goalName}>{goal.name}</Text>
-          {goal.targetAmount && goal.currentAmount >= goal.targetAmount ? (
-            <Ionicons name="checkmark-circle" size={18} color={colors.success} />
-          ) : null}
-        </View>
-        <View style={styles.progressBarBg}>
-          <View style={[styles.progressBarFill, { width: `${progress * 100}%` }]} />
         </View>
         <Text style={styles.goalMeta}>
           {maskFinancialValue(formatMoney(goal.currentAmount), balancesHidden)}
-          {goal.targetAmount ? ` / ${maskFinancialValue(formatMoney(goal.targetAmount), balancesHidden)}` : ''}
         </Text>
       </View>
     </Pressable>
@@ -660,6 +833,8 @@ const styles = StyleSheet.create({
   headerRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: spacing.sm },
   iconButton: { width: 40, height: 40, borderRadius: 20, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border, alignItems: 'center', justifyContent: 'center' },
   pageTitle: { fontSize: 28, fontWeight: '800', color: colors.ink },
+
+  periodChips: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: spacing.sm },
   status: { fontSize: 13, color: colors.mutedInk },
 
   tabRow: { flexDirection: 'row', gap: spacing.sm },
@@ -691,6 +866,23 @@ const styles = StyleSheet.create({
 
   progressBarBg: { height: 6, backgroundColor: colors.divider, borderRadius: 3, overflow: 'hidden' },
   progressBarFill: { height: 6, backgroundColor: colors.primary, borderRadius: 3 },
+
+  savingsList: { gap: spacing.md },
+  savingsProductCard: { backgroundColor: colors.surface, borderRadius: radii.xxl, padding: spacing.lg, gap: spacing.md, borderWidth: 1, borderColor: colors.border },
+  savingsProductHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', gap: spacing.md },
+  savingsProductCopy: { flex: 1, gap: spacing.xs },
+  savingsProductName: { color: colors.ink, fontSize: 17, fontWeight: '800' },
+  savingsProductBalance: { color: colors.ink, fontSize: 24, fontWeight: '800' },
+  savingsStatusBadge: { borderRadius: radii.full, paddingHorizontal: 10, paddingVertical: 5 },
+  savingsStatusActive: { backgroundColor: colors.successLight },
+  savingsStatusInactive: { backgroundColor: colors.warningLight },
+  savingsStatusText: { fontSize: 10, fontWeight: '800', textTransform: 'uppercase' },
+  savingsStatusTextActive: { color: colors.success },
+  savingsStatusTextInactive: { color: colors.warning },
+  savingsDetailTable: { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.border },
+  savingsDetailRow: { flexDirection: 'row', justifyContent: 'space-between', gap: spacing.md, paddingVertical: 11, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border },
+  savingsDetailLabel: { flex: 1, color: colors.ink, fontSize: 13, fontWeight: '700', lineHeight: 18 },
+  savingsDetailValue: { flex: 1.15, color: colors.ink, fontSize: 13, lineHeight: 18, textAlign: 'left' },
 
   emptyText: { color: colors.mutedInk, fontSize: 14, textAlign: 'center', paddingVertical: spacing.md },
 

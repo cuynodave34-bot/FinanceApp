@@ -1,61 +1,76 @@
 import { getDatabase } from '@/db/sqlite/client';
-import { SavingsGoal } from '@/shared/types/domain';
+import { Savings, InterestPeriod } from '@/shared/types/domain';
 import { createId } from '@/shared/utils/id';
 import { nowIso } from '@/shared/utils/time';
 import { buildSyncQueueItem } from '@/sync/queue/factory';
 import { enqueueSyncItem } from '@/sync/queue/repository';
 
-type SavingsGoalRow = {
+type SavingsRow = {
   id: string;
   userId: string;
   name: string;
-  targetAmount: number | null;
   currentAmount: number;
-  accountId: string | null;
-  isGeneralSavings: number;
+  interestRate: number;
+  interestPeriod: string;
+  minimumBalanceForInterest: number;
+  withholdingTaxRate: number;
+  maintainingBalance: number;
+  isSpendable: number;
   deletedAt: string | null;
   createdAt: string;
   updatedAt: string;
 };
 
-type CreateSavingsGoalInput = {
+type CreateSavingsInput = {
   userId: string;
   name: string;
-  targetAmount?: number | null;
   currentAmount?: number;
-  accountId?: string | null;
-  isGeneralSavings?: boolean;
+  interestRate?: number;
+  interestPeriod?: InterestPeriod;
+  minimumBalanceForInterest?: number;
+  withholdingTaxRate?: number;
+  maintainingBalance?: number;
+  isSpendable?: boolean;
 };
 
-type UpdateSavingsGoalInput = {
+type UpdateSavingsInput = {
   id: string;
   userId: string;
   name: string;
-  targetAmount?: number | null;
   currentAmount: number;
-  accountId?: string | null;
-  isGeneralSavings?: boolean;
+  interestRate: number;
+  interestPeriod: InterestPeriod;
+  minimumBalanceForInterest: number;
+  withholdingTaxRate: number;
+  maintainingBalance: number;
+  isSpendable: boolean;
 };
 
-function mapSavingsGoal(row: SavingsGoalRow): SavingsGoal {
+function mapSavings(row: SavingsRow): Savings {
   return {
     ...row,
-    targetAmount: row.targetAmount ?? null,
-    isGeneralSavings: Boolean(row.isGeneralSavings),
+    interestPeriod: (row.interestPeriod as InterestPeriod) || 'annual',
+    minimumBalanceForInterest: row.minimumBalanceForInterest ?? 0,
+    withholdingTaxRate: row.withholdingTaxRate ?? 0,
+    maintainingBalance: row.maintainingBalance ?? 0,
+    isSpendable: Boolean(row.isSpendable),
   };
 }
 
-export async function listSavingsGoalsByUser(userId: string) {
+export async function listSavingsByUser(userId: string) {
   const database = getDatabase();
-  const rows = await database.getAllAsync<SavingsGoalRow>(
+  const rows = await database.getAllAsync<SavingsRow>(
     `select
       id,
       user_id as userId,
       name,
-      target_amount as targetAmount,
       current_amount as currentAmount,
-      account_id as accountId,
-      is_general_savings as isGeneralSavings,
+      interest_rate as interestRate,
+      interest_period as interestPeriod,
+      minimum_balance_for_interest as minimumBalanceForInterest,
+      withholding_tax_rate as withholdingTaxRate,
+      maintaining_balance as maintainingBalance,
+      is_spendable as isSpendable,
       deleted_at as deletedAt,
       created_at as createdAt,
       updated_at as updatedAt
@@ -65,20 +80,23 @@ export async function listSavingsGoalsByUser(userId: string) {
     [userId]
   );
 
-  return rows.map(mapSavingsGoal);
+  return rows.map(mapSavings);
 }
 
-export async function createSavingsGoal(input: CreateSavingsGoalInput) {
+export async function createSavings(input: CreateSavingsInput) {
   const database = getDatabase();
   const timestamp = nowIso();
-  const goal: SavingsGoal = {
+  const savings: Savings = {
     id: createId(),
     userId: input.userId,
     name: input.name.trim(),
-    targetAmount: input.targetAmount ?? null,
     currentAmount: input.currentAmount ?? 0,
-    accountId: input.accountId ?? null,
-    isGeneralSavings: input.isGeneralSavings ?? false,
+    interestRate: input.interestRate ?? 0,
+    interestPeriod: input.interestPeriod ?? 'annual',
+    minimumBalanceForInterest: input.minimumBalanceForInterest ?? 0,
+    withholdingTaxRate: input.withholdingTaxRate ?? 0,
+    maintainingBalance: input.maintainingBalance ?? 0,
+    isSpendable: input.isSpendable ?? false,
     deletedAt: null,
     createdAt: timestamp,
     updatedAt: timestamp,
@@ -86,49 +104,59 @@ export async function createSavingsGoal(input: CreateSavingsGoalInput) {
 
   await database.runAsync(
     `insert into savings_goals (
-      id, user_id, name, target_amount, current_amount, account_id,
-      is_general_savings, deleted_at, created_at, updated_at
-    ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      id, user_id, name, current_amount, interest_rate, interest_period,
+      minimum_balance_for_interest, withholding_tax_rate, maintaining_balance,
+      is_spendable, deleted_at, created_at, updated_at
+    ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
-      goal.id,
-      goal.userId,
-      goal.name,
-      goal.targetAmount ?? null,
-      goal.currentAmount,
-      goal.accountId ?? null,
-      goal.isGeneralSavings ? 1 : 0,
+      savings.id,
+      savings.userId,
+      savings.name,
+      savings.currentAmount,
+      savings.interestRate,
+      savings.interestPeriod,
+      savings.minimumBalanceForInterest,
+      savings.withholdingTaxRate,
+      savings.maintainingBalance,
+      savings.isSpendable ? 1 : 0,
       null,
-      goal.createdAt,
-      goal.updatedAt,
+      savings.createdAt,
+      savings.updatedAt,
     ]
   );
 
   await enqueueSyncItem(
-    buildSyncQueueItem(goal.userId, 'savings_goals', goal.id, 'create', goal)
+    buildSyncQueueItem(savings.userId, 'savings_goals', savings.id, 'create', savings)
   );
 
-  return goal;
+  return savings;
 }
 
-export async function updateSavingsGoal(input: UpdateSavingsGoalInput) {
+export async function updateSavings(input: UpdateSavingsInput) {
   const database = getDatabase();
   const updatedAt = nowIso();
 
   await database.runAsync(
     `update savings_goals
     set name = ?,
-        target_amount = ?,
         current_amount = ?,
-        account_id = ?,
-        is_general_savings = ?,
+        interest_rate = ?,
+        interest_period = ?,
+        minimum_balance_for_interest = ?,
+        withholding_tax_rate = ?,
+        maintaining_balance = ?,
+        is_spendable = ?,
         updated_at = ?
     where id = ? and user_id = ? and deleted_at is null`,
     [
       input.name.trim(),
-      input.targetAmount ?? null,
       input.currentAmount,
-      input.accountId ?? null,
-      input.isGeneralSavings ? 1 : 0,
+      input.interestRate,
+      input.interestPeriod,
+      input.minimumBalanceForInterest,
+      input.withholdingTaxRate,
+      input.maintainingBalance,
+      input.isSpendable ? 1 : 0,
       updatedAt,
       input.id,
       input.userId,
@@ -145,7 +173,7 @@ export async function updateSavingsGoal(input: UpdateSavingsGoalInput) {
   );
 }
 
-export async function adjustSavingsGoalAmount(id: string, userId: string, delta: number) {
+export async function adjustSavingsAmount(id: string, userId: string, delta: number) {
   const database = getDatabase();
   const updatedAt = nowIso();
 
@@ -169,21 +197,21 @@ export async function adjustSavingsGoalAmount(id: string, userId: string, delta:
   );
 }
 
-export async function transferSavingsGoalAmount(
-  fromGoalId: string | null,
-  toGoalId: string | null,
+export async function transferSavingsAmount(
+  fromId: string | null,
+  toId: string | null,
   userId: string,
   amount: number
 ) {
-  if (fromGoalId) {
-    await adjustSavingsGoalAmount(fromGoalId, userId, -amount);
+  if (fromId) {
+    await adjustSavingsAmount(fromId, userId, -amount);
   }
-  if (toGoalId) {
-    await adjustSavingsGoalAmount(toGoalId, userId, amount);
+  if (toId) {
+    await adjustSavingsAmount(toId, userId, amount);
   }
 }
 
-export async function deleteSavingsGoal(id: string, userId: string) {
+export async function deleteSavings(id: string, userId: string) {
   const database = getDatabase();
   const deletedAt = nowIso();
 

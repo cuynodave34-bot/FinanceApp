@@ -1343,7 +1343,7 @@ A student-focused offline-first finance tracker that helps track money across mu
 | 19 | Daily budget setup | `src/features/budgets/screens/BudgetScreen.tsx` |
 | 20 | Future-dated budgets | Budget screen accepts `YYYY-MM-DD` dates |
 | 21 | Carry-over and overspend logic | `src/services/budgets/calculateBudgetSummaries.ts` |
-| 22 | Spendable balance calculation | `src/services/balances/calculateSpendableBalance.ts` |
+| 22 | Spendable balance calculation | `src/services/balances/calculateSpendableBalance.ts` — now includes upcoming expenses from future budgets |
 | 23 | Budget summary on home | Home reads live computed budget metrics |
 | 24 | Weekly and monthly reports | `src/services/reports/calculateReportsSummary.ts` |
 | 25 | Category and account spending/income reports | Reports screen groups by category and account |
@@ -1359,7 +1359,7 @@ A student-focused offline-first finance tracker that helps track money across mu
 | 35 | Balance confirmation prompt | `BalanceConfirmationPrompt` on Home with 7-day cadence and adjustment form |
 | 36 | UUID-compatible local IDs | `src/shared/utils/id.ts` generates v4 UUIDs |
 | 37 | Automated unit tests | Jest + 54 tests covering budgets, balances, reports, sync, streaks, CSV import/export, and id gen |
-| 38 | Google OAuth sign-in | `AuthProvider.signInWithGoogle` via `expo-web-browser` and `expo-auth-session` |
+| 38 | ~~Google OAuth sign-in~~ (abolished) | Removed — email/password remains primary auth method |
 | 39 | Negative balance warning | `TransactionsScreen` guards expense creation with Alert confirmation |
 | 40 | Publish hardening pass | `app.json` icons, splash, notification, description, and adaptiveIcon config |
 | 41 | Inline category creation in transaction flow | `+ New category` chip and inline form in `TransactionsScreen` |
@@ -1370,6 +1370,8 @@ A student-focused offline-first finance tracker that helps track money across mu
 | 46 | Logging streak | `calculateStreaks` service + streak chips on Home |
 | 47 | No-spend day streak | `calculateStreaks` service + streak chips on Home |
 | 48 | AI insights via Groq | `AIInsightsScreen` with RAG context builder, Groq client with model fallback, and 6 insight categories |
+| 53 | Quick Add System | `QuickAddScreen` with category shortcut buttons (Food, Snack, Drink, Transport, School, Wants, Random, Income, Transfer) wired into Home |
+| 54 | Upcoming expenses from future budgets | Future budget base amounts feed into `calculateSpendableBalance` as `upcomingPlannedExpenses` |
 | 49 | Location tagging | `location_name` field in transactions schema, repository, and form |
 | 50 | Receipt photo attachment | `photo_url` field in transactions schema, repository, and form |
 | 51 | Savings milestone messaging | Milestone alerts (25/50/75/100%) in `GoalsScreen` when saving goals |

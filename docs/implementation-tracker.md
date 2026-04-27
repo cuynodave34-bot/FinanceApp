@@ -25,7 +25,7 @@ This file is the build ledger for the product brief. It keeps the repo aligned w
 
 | Feature | Status | Notes |
 | --- | --- | --- |
-| Google sign-in through Supabase OAuth | done | `AuthProvider.signInWithGoogle` via `expo-web-browser` and `expo-auth-session` |
+| ~~Google sign-in through Supabase OAuth~~ (abolished) | removed | Feature removed; email/password remains primary auth method |
 | Email/password auth fallback | done | [src/features/auth/screens/AuthScreen.tsx](C:/Finance%20Tracker/src/features/auth/screens/AuthScreen.tsx) |
 | Session persistence | done | Supabase session bootstrap is wired in [src/features/auth/provider/AuthProvider.tsx](C:/Finance%20Tracker/src/features/auth/provider/AuthProvider.tsx) |
 | Profile bootstrap | foundation | Remote profile upsert is attempted after sign-in |
@@ -79,7 +79,7 @@ This file is the build ledger for the product brief. It keeps the repo aligned w
 
 | Feature | Status | Notes |
 | --- | --- | --- |
-| Spendable balance formula | done | Home now uses the service with future budget reserve deductions from live summaries |
+| Spendable balance formula | done | Home now uses the service with future budget reserve deductions from live summaries; upcoming planned expenses from future budgets also deducted |
 | Daily budget | done | Budget screen saves dated local budget rows in SQLite |
 | Advance budgets | done | Budget screen accepts future `YYYY-MM-DD` budget dates |
 | Carry-over logic | done | Shared budget summary service rolls unused balance forward deterministically |
@@ -122,6 +122,8 @@ This file is the build ledger for the product brief. It keeps the repo aligned w
 | Biggest expenses | done | Reports screen ranks largest finalized expenses from SQLite |
 | Impulse spending report | done | Reports screen isolates flagged impulse expenses and totals |
 | AI insights via Groq | done | `AIInsightsScreen` with RAG context builder, Groq client with model fallback, and 6 insight categories |
+| Quick Add System | done | `QuickAddScreen` with category shortcut buttons (Food, Snack, Drink, Transport, School, Wants, Random, Income, Transfer) wired into Home screen quick actions |
+| Upcoming expenses from future budgets | done | `calculateUpcomingPlannedExpenses` sums future budget base amounts and feeds into `calculateSpendableBalance` |
 
 ## Phase 10. Reminders, Check-In, Motivation
 
