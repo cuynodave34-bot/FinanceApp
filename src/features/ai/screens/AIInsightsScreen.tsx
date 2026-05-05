@@ -10,58 +10,56 @@ import {
 } from 'react-native';
 
 import { useAuth } from '@/features/auth/provider/AuthProvider';
+import { generateInsight, InsightType } from '@/services/ai/generateInsights';
 import { colors } from '@/shared/theme/colors';
 import { SectionCard } from '@/shared/ui/SectionCard';
-import { generateInsight, InsightType } from '@/services/ai/generateInsights';
 
-const INSIGHT_CARDS: { type: InsightType; title: string; emoji: string }[] = [
-  { type: 'overview', title: 'Financial Overview', emoji: '📊' },
-  { type: 'budget_advice', title: 'Budget Tips', emoji: '🎯' },
-  { type: 'spending_analysis', title: 'Spending Analysis', emoji: '🧾' },
-  { type: 'savings_tips', title: 'Savings Coach', emoji: '💰' },
-  { type: 'debt_strategy', title: 'Debt Strategy', emoji: '📉' },
-  { type: 'habit_coaching', title: 'Habit Coach', emoji: '🔥' },
+const INSIGHT_CARDS: { type: InsightType; title: string; badge: string }[] = [
+  { type: 'overview', title: 'Financial Overview', badge: 'OV' },
+  { type: 'budget_advice', title: 'Budget Tips', badge: 'BG' },
+  { type: 'budget_recommendation', title: 'Budget Recommendation', badge: 'BR' },
+  { type: 'spending_analysis', title: 'Spending Analysis', badge: 'SP' },
+  { type: 'impulse_spending_insight', title: 'Impulse Spending Insight', badge: 'IM' },
+  { type: 'weekly_reflection', title: 'Weekly Reflection', badge: 'WK' },
+  { type: 'savings_tips', title: 'Savings Coach', badge: 'SV' },
+  { type: 'debt_strategy', title: 'Debt Strategy', badge: 'DB' },
+  { type: 'habit_coaching', title: 'Habit Coach', badge: 'HB' },
 ];
+
+const emptyInsightResults: Record<InsightType, string | null> = {
+  overview: null,
+  budget_advice: null,
+  spending_analysis: null,
+  weekly_reflection: null,
+  savings_tips: null,
+  debt_strategy: null,
+  habit_coaching: null,
+  budget_recommendation: null,
+  impulse_spending_insight: null,
+};
+
+const emptyInsightLoading: Record<InsightType, boolean> = {
+  overview: false,
+  budget_advice: false,
+  spending_analysis: false,
+  weekly_reflection: false,
+  savings_tips: false,
+  debt_strategy: false,
+  habit_coaching: false,
+  budget_recommendation: false,
+  impulse_spending_insight: false,
+};
 
 export function AIInsightsScreen() {
   const { user } = useAuth();
-  const [results, setResults] = useState<Record<InsightType, string | null>>({
-    overview: null,
-    budget_advice: null,
-    spending_analysis: null,
-    savings_tips: null,
-    debt_strategy: null,
-    habit_coaching: null,
-  });
-  const [loading, setLoading] = useState<Record<InsightType, boolean>>({
-    overview: false,
-    budget_advice: false,
-    spending_analysis: false,
-    savings_tips: false,
-    debt_strategy: false,
-    habit_coaching: false,
-  });
-  const [errors, setErrors] = useState<Record<InsightType, string | null>>({
-    overview: null,
-    budget_advice: null,
-    spending_analysis: null,
-    savings_tips: null,
-    debt_strategy: null,
-    habit_coaching: null,
-  });
+  const [results, setResults] = useState<Record<InsightType, string | null>>(emptyInsightResults);
+  const [loading, setLoading] = useState<Record<InsightType, boolean>>(emptyInsightLoading);
+  const [errors, setErrors] = useState<Record<InsightType, string | null>>(emptyInsightResults);
   const [expanded, setExpanded] = useState<InsightType | null>(null);
 
   useFocusEffect(
     useCallback(() => {
-      // clear transient errors on revisit
-      setErrors({
-        overview: null,
-        budget_advice: null,
-        spending_analysis: null,
-        savings_tips: null,
-        debt_strategy: null,
-        habit_coaching: null,
-      });
+      setErrors(emptyInsightResults);
     }, [])
   );
 
@@ -91,8 +89,7 @@ export function AIInsightsScreen() {
       <View style={styles.hero}>
         <Text style={styles.title}>AI Insights</Text>
         <Text style={styles.subtitle}>
-          Ask Penny, your financial coach, for personalized advice based on your real data.
-          Insights are generated on-device using Groq AI with smart model fallback.
+          Ask Penny for personalized finance coaching based on summarized app data.
         </Text>
       </View>
 
@@ -103,7 +100,7 @@ export function AIInsightsScreen() {
         const isExpanded = expanded === card.type;
 
         return (
-          <SectionCard key={card.type} title={`${card.emoji} ${card.title}`} subtitle="">
+          <SectionCard key={card.type} title={`${card.badge} ${card.title}`} subtitle="">
             {!result && !error ? (
               <Pressable
                 onPress={() => handleGenerate(card.type)}

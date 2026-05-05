@@ -1,10 +1,13 @@
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { useSync } from '@/sync/provider/SyncProvider';
-import { colors } from '@/shared/theme/colors';
+import { useAppPreferences } from '@/features/preferences/provider/AppPreferencesProvider';
+import { colors, getThemeColors } from '@/shared/theme/colors';
 
 export function SyncStatusBadge() {
   const { status, pendingCount, lastError, triggerSync } = useSync();
+  const { themeMode } = useAppPreferences();
+  const theme = getThemeColors(themeMode);
 
   const label =
     status === 'syncing'
@@ -29,7 +32,7 @@ export function SyncStatusBadge() {
   return (
     <Pressable onPress={triggerSync} style={styles.container}>
       <View style={[styles.dot, { backgroundColor: dotColor }]} />
-      <Text style={styles.label}>{label}</Text>
+      <Text style={[styles.label, { color: theme.mutedInk }]}>{label}</Text>
       {lastError ? <Text style={styles.errorHint}>{lastError} — Tap to retry</Text> : null}
     </Pressable>
   );

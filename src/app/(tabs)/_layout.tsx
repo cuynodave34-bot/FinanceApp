@@ -2,7 +2,8 @@ import { Tabs } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 
-import { colors } from '@/shared/theme/colors';
+import { useAppPreferences } from '@/features/preferences/provider/AppPreferencesProvider';
+import { getThemeColors } from '@/shared/theme/colors';
 
 const tabIcons: Record<string, { active: keyof typeof Ionicons.glyphMap; inactive: keyof typeof Ionicons.glyphMap }> = {
   index: { active: 'home', inactive: 'home-outline' },
@@ -14,6 +15,8 @@ const tabIcons: Record<string, { active: keyof typeof Ionicons.glyphMap; inactiv
 
 export default function TabLayout() {
   const insets = useSafeAreaInsets();
+  const { themeMode } = useAppPreferences();
+  const colors = getThemeColors(themeMode);
   const tabBarBottomPadding = Math.max(insets.bottom, 12);
 
   return (

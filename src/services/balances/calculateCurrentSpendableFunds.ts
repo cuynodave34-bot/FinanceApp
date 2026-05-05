@@ -1,4 +1,5 @@
 import { Account, Savings, Transaction } from '@/shared/types/domain';
+import { getTransferReceivedAmount } from '@/shared/utils/transactionAmounts';
 
 type CurrentSpendableFundsInput = {
   accounts: Account[];
@@ -13,7 +14,7 @@ export function calculateCurrentSpendableFunds({
 }: CurrentSpendableFundsInput) {
   const accountBalances = new Map(
     accounts
-      .filter((account) => !account.isArchived)
+      .filter((account) => !account.isArchived && !account.deletedAt)
       .map((account) => [account.id, account.initialBalance])
   );
 
@@ -44,17 +45,17 @@ export function calculateCurrentSpendableFunds({
       if (transaction.toAccountId) {
         accountBalances.set(
           transaction.toAccountId,
-          (accountBalances.get(transaction.toAccountId) ?? 0) + transaction.amount
+          (accountBalances.get(transaction.toAccountId) ?? 0) + getTransferReceivedAmount(transaction)
         );
       }
     }
   }
 
   const spendableAccountsTotal = accounts
-    .filter((account) => !account.isArchived && account.isSpendable)
+    .filter((account) => !account.isArchived && !account.deletedAt && account.isSpendable)
     .reduce((sum, account) => sum + (accountBalances.get(account.id) ?? account.initialBalance), 0);
   const spendableSavingsTotal = savings
-    .filter((goal) => goal.isSpendable)
+    .filter((goal) => goal.isSpendable && !goal.deletedAt)
     .reduce((sum, goal) => sum + goal.currentAmount, 0);
 
   return Number((spendableAccountsTotal + spendableSavingsTotal).toFixed(2));

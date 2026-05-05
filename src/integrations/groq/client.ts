@@ -1,5 +1,8 @@
 import Constants from 'expo-constants';
 
+import { env } from '@/shared/config/env';
+import { redactSensitiveText } from '@/shared/utils/redaction';
+
 export type GroqMessage = {
   role: 'system' | 'user' | 'assistant';
   content: string;
@@ -34,10 +37,14 @@ const MODEL_FALLBACK_CHAIN = [
 
 function getApiKey(): string | null {
   const key =
-    process.env.EXPO_PUBLIC_GROQ_API_KEY ??
+    env.groqApiKey ??
     Constants.expoConfig?.extra?.groqApiKey ??
     null;
   return key;
+}
+
+function canUseClientApiKey() {
+  return env.allowClientAiKey || __DEV__;
 }
 
 export async function chatWithGroq(
@@ -47,6 +54,12 @@ export async function chatWithGroq(
   const apiKey = getApiKey();
   if (!apiKey) {
     throw new Error('GROQ_API_KEY is not configured. Add EXPO_PUBLIC_GROQ_API_KEY to your .env file.');
+  }
+
+  if (!canUseClientApiKey()) {
+    throw new Error(
+      'Direct client AI keys are disabled for this build. Route AI requests through a server-side function or set EXPO_PUBLIC_ALLOW_CLIENT_AI_KEY=true only for an explicitly accepted non-production build.'
+    );
   }
 
   const modelsToTry = options.preferredModel
@@ -79,18 +92,18 @@ export async function chatWithGroq(
 
         // 429 = rate limit / model overwhelmed
         if (status === 429 || status === 503 || errorMessage.toLowerCase().includes('rate limit')) {
-          lastError = new Error(`Model ${model} overwhelmed: ${errorMessage}`);
+          lastError = new Error(`Model ${model} overwhelmed: ${redactSensitiveText(errorMessage, 180)}`);
           continue; // try next model in chain
         }
 
-        throw new Error(`Groq API error (${model}): ${errorMessage}`);
+        throw new Error(`Groq API error (${model}): ${redactSensitiveText(errorMessage, 180)}`);
       }
 
       const content = data.choices?.[0]?.message?.content?.trim() ?? '';
       return { content, modelUsed: model, usage: data.usage };
     } catch (error) {
       if (error instanceof Error && /fetch|network|timeout/i.test(error.message)) {
-        lastError = new Error(`Network error with ${model}: ${error.message}`);
+        lastError = new Error(`Network error with ${model}: ${redactSensitiveText(error.message, 180)}`);
         continue; // try next model
       }
       throw error;

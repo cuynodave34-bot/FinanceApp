@@ -13,11 +13,31 @@ import {
   updateTransaction,
 } from '@/db/repositories/transactionsRepository';
 import { listSavingsByUser } from '@/db/repositories/savingsGoalsRepository';
+import { createPurchaseWaitingRoomItem } from '@/db/repositories/purchaseWaitingRoomRepository';
+import { createWishlistItem } from '@/db/repositories/wishlistItemsRepository';
+import {
+  checkTransactionTemplateConflict,
+  createTransactionTemplate,
+  getTransactionTemplateById,
+  listTransactionTemplatesByUser,
+  TemplateMutationInput,
+  updateTransactionTemplate,
+} from '@/db/repositories/transactionTemplatesRepository';
 import { useAuth } from '@/features/auth/provider/AuthProvider';
-import { colors, spacing, radii, shadows } from '@/shared/theme/colors';
-import { Account, Category, CategoryType, Savings, TransactionType } from '@/shared/types/domain';
+import { useAppPreferences } from '@/features/preferences/provider/AppPreferencesProvider';
+import { colors, getThemeColors, spacing, radii, shadows } from '@/shared/theme/colors';
+import {
+  Account,
+  Category,
+  CategoryType,
+  PlanningType,
+  Savings,
+  TransactionTemplate,
+  TransactionType,
+} from '@/shared/types/domain';
 import { formatAccountLabel } from '@/shared/utils/accountLabels';
 import { formatMoney } from '@/shared/utils/format';
+import { getTransferReceivedAmount } from '@/shared/utils/transactionAmounts';
 import {
   combineDateAndTime,
   isDateKey,
@@ -33,13 +53,25 @@ import {
   checkExpenseBudgetGuard,
   ExpenseBudgetGuardResult,
 } from '@/services/budgets/expenseBudgetGuard';
+import {
+  DuplicateTransactionCandidate,
+  findDuplicateTransaction,
+} from '@/services/transactions/findDuplicateTransaction';
 
 const transactionTypes: TransactionType[] = ['expense', 'income', 'transfer'];
+const expensePlanningOptions: { value: PlanningType; label: string }[] = [
+  { value: 'planned', label: 'Planned' },
+  { value: 'unplanned', label: 'Unplanned' },
+  { value: 'impulse', label: 'Impulse' },
+  { value: 'emergency', label: 'Emergency' },
+  { value: 'unknown', label: 'Unknown' },
+];
 
 type TransactionDraft = {
   id: string;
   type: TransactionType;
   amount: string;
+  transferFee: string;
   accountId: string;
   toAccountId: string;
   fromSavingsGoalId: string;
@@ -49,7 +81,9 @@ type TransactionDraft = {
   photoUrl: string;
   locationName: string;
   isImpulse: boolean;
+  planningType: PlanningType;
   isLazyEntry: boolean;
+  expenseSaveTarget: 'transaction' | 'wishlist' | 'waiting_room';
   transactionDate: string;
   transactionTime: string;
   lastNonLazyType: TransactionType;
@@ -61,6 +95,7 @@ function createEmptyDraft(): TransactionDraft {
     id: '',
     type: 'expense',
     amount: '',
+    transferFee: '',
     accountId: '',
     toAccountId: '',
     fromSavingsGoalId: '',
@@ -70,7 +105,9 @@ function createEmptyDraft(): TransactionDraft {
     photoUrl: '',
     locationName: '',
     isImpulse: false,
+    planningType: 'unknown',
     isLazyEntry: false,
+    expenseSaveTarget: 'transaction',
     transactionDate: toDateKey(now),
     transactionTime: toTimeKey(now),
     lastNonLazyType: 'expense',
@@ -79,45 +116,77 @@ function createEmptyDraft(): TransactionDraft {
 
 export function AddTransactionScreen() {
   const { user } = useAuth();
+  const { themeMode } = useAppPreferences();
   const router = useRouter();
-  const { editId, date: dateParam, type: typeParam } = useLocalSearchParams<{
+  const { editId, date: dateParam, type: typeParam, templateId, lazy } = useLocalSearchParams<{
     editId?: string;
     date?: string;
     type?: string;
+    templateId?: string;
+    lazy?: string;
   }>();
 
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [savingsList, setSavingsList] = useState<Savings[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
   const [transactions, setTransactions] = useState<TransactionFeedItem[]>([]);
+  const [templates, setTemplates] = useState<TransactionTemplate[]>([]);
   const [draft, setDraft] = useState<TransactionDraft>(createEmptyDraft);
   const [status, setStatus] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [savingTemplate, setSavingTemplate] = useState(false);
   const [confirmModal, setConfirmModal] = useState<{ visible: boolean; onConfirm: () => void }>({
     visible: false,
     onConfirm: () => {},
   });
   const [budgetPrompt, setBudgetPrompt] = useState<ExpenseBudgetGuardResult | null>(null);
+  const [duplicatePrompt, setDuplicatePrompt] = useState<{
+    candidate: DuplicateTransactionCandidate;
+    allowNegative: boolean;
+    allowBudgetOverride: boolean;
+  } | null>(null);
   const [spendableBalancePrompt, setSpendableBalancePrompt] = useState<{
     spendableFunds: number;
   } | null>(null);
+  const theme = getThemeColors(themeMode);
+  const inputThemeStyle = {
+    backgroundColor: theme.surfaceSecondary,
+    borderColor: theme.border,
+    color: theme.ink,
+  };
+  const chipThemeStyle = {
+    backgroundColor: theme.surfaceSecondary,
+    borderColor: theme.border,
+  };
+  const chipActiveThemeStyle = {
+    backgroundColor: theme.primary,
+    borderColor: theme.primary,
+  };
 
   const [isCreatingCategory, setIsCreatingCategory] = useState(false);
   const [newCategoryName, setNewCategoryName] = useState('');
   const [newCategoryType, setNewCategoryType] = useState<CategoryType>('both');
+  const [appliedTemplateId, setAppliedTemplateId] = useState<string | null>(null);
+  const [templatePickerVisible, setTemplatePickerVisible] = useState(false);
+  const [templateOverwritePrompt, setTemplateOverwritePrompt] = useState<{
+    existing: TransactionTemplate;
+    input: TemplateMutationInput;
+  } | null>(null);
 
   const refresh = useCallback(async () => {
     if (!user) return;
-    const [accountRows, goalRows, categoryRows, transactionRows] = await Promise.all([
+    const [accountRows, goalRows, categoryRows, transactionRows, templateRows] = await Promise.all([
       listAccountsByUser(user.id),
       listSavingsByUser(user.id),
       listCategoriesByUser(user.id),
       listTransactionsByUser(user.id),
+      listTransactionTemplatesByUser(user.id),
     ]);
     setAccounts(accountRows.filter((account) => !account.isArchived));
     setSavingsList(goalRows);
     setCategories(categoryRows);
     setTransactions(transactionRows);
+    setTemplates(templateRows);
   }, [user]);
 
   useFocusEffect(
@@ -126,6 +195,26 @@ export function AddTransactionScreen() {
         setStatus(error instanceof Error ? error.message : 'Failed to load data.');
       });
     }, [refresh])
+  );
+
+  useFocusEffect(
+    useCallback(() => {
+      if (!user || editId || !templateId || appliedTemplateId === templateId) return;
+
+      getTransactionTemplateById(user.id, templateId)
+        .then((template) => {
+          if (!template) {
+            setStatus('Template not found.');
+            return;
+          }
+          applyTemplate(template);
+          setAppliedTemplateId(template.id);
+          setStatus(`Template loaded: ${template.name}`);
+        })
+        .catch((error) =>
+          setStatus(error instanceof Error ? error.message : 'Failed to load template.')
+        );
+    }, [appliedTemplateId, editId, templateId, user])
   );
 
   useFocusEffect(
@@ -140,9 +229,15 @@ export function AddTransactionScreen() {
           next.type = typeParam;
           next.lastNonLazyType = typeParam;
         }
+        if (lazy === '1') {
+          next.isLazyEntry = true;
+          if (next.type === 'transfer') {
+            next.type = 'expense';
+          }
+        }
         return next;
       });
-    }, [editId, dateParam, typeParam])
+    }, [editId, dateParam, lazy, typeParam])
   );
 
   useFocusEffect(
@@ -163,6 +258,7 @@ export function AddTransactionScreen() {
         id: transaction.id,
         type: transaction.type,
         amount: String(transaction.amount),
+        transferFee: transaction.transferFee ? String(transaction.transferFee) : '',
         accountId: transaction.accountId ?? '',
         toAccountId: transaction.toAccountId ?? '',
         fromSavingsGoalId: transaction.fromSavingsGoalId ?? '',
@@ -171,8 +267,10 @@ export function AddTransactionScreen() {
         notes: transaction.notes ?? '',
         photoUrl: transaction.photoUrl ?? '',
         locationName: transaction.locationName ?? '',
-        isImpulse: transaction.isImpulse,
+        isImpulse: transaction.isImpulse || transaction.planningType === 'impulse',
+        planningType: transaction.isImpulse ? 'impulse' : transaction.planningType ?? 'unknown',
         isLazyEntry: transaction.isLazyEntry,
+        expenseSaveTarget: 'transaction',
         transactionDate,
         transactionTime,
         lastNonLazyType: transaction.type,
@@ -199,9 +297,19 @@ export function AddTransactionScreen() {
     [accounts, draft.accountId]
   );
 
+  const spendableSavings = useMemo(
+    () => savingsList.filter((s) => s.isSpendable),
+    [savingsList]
+  );
+
+  const spendableAccounts = useMemo(
+    () => accounts.filter((account) => account.isSpendable),
+    [accounts]
+  );
+
   const availableSourceSavings = useMemo(
-    () => savingsList.filter((s) => s.id !== draft.toSavingsGoalId),
-    [savingsList, draft.toSavingsGoalId]
+    () => spendableSavings.filter((s) => s.id !== draft.toSavingsGoalId),
+    [spendableSavings, draft.toSavingsGoalId]
   );
 
   const availableDestSavings = useMemo(
@@ -209,16 +317,63 @@ export function AddTransactionScreen() {
     [savingsList, draft.fromSavingsGoalId]
   );
 
-  const spendableSavings = useMemo(
-    () => savingsList.filter((s) => s.isSpendable),
-    [savingsList]
+  const paymentOptions = useMemo(
+    () => [
+      ...(draft.type === 'expense' ? spendableAccounts : accounts).map((account) => ({
+        id: account.id,
+        label: formatAccountLabel(account),
+        kind: 'account' as const,
+      })),
+      ...(draft.type === 'expense' ? spendableSavings : savingsList).map((savings) => ({
+        id: savings.id,
+        label: savings.name,
+        kind: 'savings' as const,
+      })),
+    ],
+    [accounts, draft.type, savingsList, spendableAccounts, spendableSavings]
+  );
+
+  const transferSourceOptions = useMemo(
+    () => [
+      ...spendableAccounts.map((account) => ({
+        id: account.id,
+        label: formatAccountLabel(account),
+        kind: 'account' as const,
+      })),
+      ...availableSourceSavings.map((savings) => ({
+        id: savings.id,
+        label: savings.name,
+        kind: 'savings' as const,
+      })),
+    ],
+    [availableSourceSavings, spendableAccounts]
+  );
+
+  const transferDestinationOptions = useMemo(
+    () => [
+      ...destinationAccounts.map((account) => ({
+        id: account.id,
+        label: formatAccountLabel(account),
+        kind: 'account' as const,
+      })),
+      ...availableDestSavings.map((savings) => ({
+        id: savings.id,
+        label: savings.name,
+        kind: 'savings' as const,
+      })),
+    ],
+    [availableDestSavings, destinationAccounts]
   );
 
   const isEditing = Boolean(draft.id);
+  const isSafetyCapture =
+    !isEditing &&
+    draft.type === 'expense' &&
+    draft.expenseSaveTarget !== 'transaction';
 
   const hasTransferSource = Boolean(draft.accountId || draft.fromSavingsGoalId);
   const hasTransferDest = Boolean(draft.toAccountId || draft.toSavingsGoalId);
-  const saveDisabled = saving || (!draft.isLazyEntry && (
+  const saveDisabled = saving || (!draft.isLazyEntry && !isSafetyCapture && (
     (draft.type === 'transfer' && (!hasTransferSource || !hasTransferDest)) ||
     (draft.type === 'expense' && !draft.accountId && !draft.fromSavingsGoalId) ||
     (draft.type === 'income' && !draft.accountId && !draft.toSavingsGoalId)
@@ -229,12 +384,13 @@ export function AddTransactionScreen() {
     if (!account) return 0;
     let balance = account.initialBalance;
     for (const t of transactions) {
+      if (draft.id && t.id === draft.id) continue;
       if (t.deletedAt) continue;
       if (t.type === 'income' && t.accountId === accountId) balance += t.amount;
       if (t.type === 'expense' && t.accountId === accountId) balance -= t.amount;
       if (t.type === 'transfer') {
         if (t.accountId === accountId) balance -= t.amount;
-        if (t.toAccountId === accountId) balance += t.amount;
+        if (t.toAccountId === accountId) balance += getTransferReceivedAmount(t);
       }
     }
     return balance - draftAmount;
@@ -243,7 +399,19 @@ export function AddTransactionScreen() {
   function getProjectedSavingsBalance(savingsId: string, draftAmount: number) {
     const savings = savingsList.find((s) => s.id === savingsId);
     if (!savings) return 0;
-    return savings.currentAmount - draftAmount;
+    let balance = savings.currentAmount;
+    const existingTransaction = draft.id
+      ? transactions.find((transaction) => transaction.id === draft.id)
+      : null;
+
+    if (existingTransaction?.fromSavingsGoalId === savingsId) {
+      balance += existingTransaction.amount;
+    }
+    if (existingTransaction?.savingsGoalId === savingsId) {
+      balance -= getTransferReceivedAmount(existingTransaction);
+    }
+
+    return balance - draftAmount;
   }
 
   function getSpendableFundsForDraft() {
@@ -275,7 +443,82 @@ export function AddTransactionScreen() {
       : currentSpendableFunds;
   }
 
-  async function handleSaveTransaction(allowNegative = false, allowBudgetOverride = false) {
+  function applyTemplate(template: TransactionTemplate) {
+    setDraft((current) => ({
+      ...current,
+      type: template.type,
+      amount: template.defaultAmount ? String(template.defaultAmount) : '',
+      accountId: template.accountId ?? '',
+      toAccountId: template.toAccountId ?? '',
+      fromSavingsGoalId: template.fromSavingsGoalId ?? '',
+      toSavingsGoalId: template.savingsGoalId ?? '',
+      categoryId: template.categoryId ?? template.subcategoryId ?? '',
+      notes: template.notes ?? template.name,
+      isImpulse: template.type === 'expense' ? template.isImpulseDefault : false,
+      planningType:
+        template.type !== 'expense'
+          ? 'unknown'
+          : template.isImpulseDefault
+            ? 'impulse'
+            : template.isPlannedDefault
+              ? 'planned'
+              : 'unknown',
+      isLazyEntry: false,
+      expenseSaveTarget: 'transaction',
+      lastNonLazyType: template.type,
+    }));
+  }
+
+  async function saveSafetyCapture(amount: number) {
+    if (!user) return;
+
+    const itemName =
+      draft.notes.trim() ||
+      categories.find((category) => category.id === draft.categoryId)?.name ||
+      'Planned purchase';
+
+    try {
+      setSaving(true);
+      if (draft.expenseSaveTarget === 'wishlist') {
+        await createWishlistItem({
+          userId: user.id,
+          itemName,
+          estimatedPrice: amount,
+          categoryId: draft.categoryId || null,
+          status: 'not_affordable',
+          notes: draft.notes || null,
+        });
+        setStatus('Saved to wishlist for review.');
+        setDraft(createEmptyDraft());
+        await refresh();
+        setTimeout(() => router.push('/wishlist' as any), 500);
+        return;
+      }
+
+      await createPurchaseWaitingRoomItem({
+        userId: user.id,
+        itemName,
+        estimatedPrice: amount,
+        categoryId: draft.categoryId || null,
+        reason: draft.notes || null,
+        waitUntil: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+      });
+      setStatus('Saved to waiting room for review.');
+      setDraft(createEmptyDraft());
+      await refresh();
+      setTimeout(() => router.push('/waiting-room' as any), 500);
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : 'Failed to save planned purchase.');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleSaveTransaction(
+    allowNegative = false,
+    allowBudgetOverride = false,
+    allowDuplicate = false
+  ) {
     if (!user || saving) return;
 
     if (!isDateKey(draft.transactionDate)) {
@@ -288,7 +531,28 @@ export function AddTransactionScreen() {
     }
 
     const draftAmount = Number(draft.amount);
+    if (!Number.isFinite(draftAmount) || draftAmount <= 0) {
+      setStatus('Enter a valid amount.');
+      return;
+    }
+    const transferFee = draft.type === 'transfer' ? Number(draft.transferFee || '0') : 0;
+    if (draft.type === 'transfer') {
+      if (!Number.isFinite(transferFee) || transferFee < 0) {
+        setStatus('Enter a valid transfer fee.');
+        return;
+      }
+      if (transferFee >= draftAmount) {
+        setStatus('Transfer fee must be less than the transfer amount.');
+        return;
+      }
+    }
+
     if (draft.type === 'expense') {
+      if (isSafetyCapture) {
+        await saveSafetyCapture(draftAmount);
+        return;
+      }
+
       const spendableFunds = getSpendableFundsForDraft();
       if (draftAmount > spendableFunds) {
         setSpendableBalancePrompt({ spendableFunds });
@@ -300,7 +564,7 @@ export function AddTransactionScreen() {
       const budgetGuard = await checkExpenseBudgetGuard({
         userId: user.id,
         amount: draftAmount,
-        date: toDateKey(new Date()),
+        date: draft.transactionDate,
         excludeTransactionId: draft.id || null,
       });
 
@@ -327,25 +591,58 @@ export function AddTransactionScreen() {
       }
     }
 
+    const payload = {
+      userId: user.id,
+      type: draft.type,
+      amount: draftAmount,
+      transferFee,
+      accountId: draft.accountId || null,
+      toAccountId: draft.type === 'transfer' ? draft.toAccountId || null : null,
+      savingsGoalId:
+        draft.type === 'income' || draft.type === 'transfer'
+          ? draft.toSavingsGoalId || null
+          : null,
+      fromSavingsGoalId:
+        draft.type === 'expense' || draft.type === 'transfer'
+          ? draft.fromSavingsGoalId || null
+          : null,
+      categoryId: draft.type === 'transfer' ? null : draft.categoryId || null,
+      notes: draft.notes,
+      photoUrl: draft.photoUrl || null,
+      locationName: draft.locationName || null,
+      isImpulse: draft.type === 'expense' ? draft.isImpulse : false,
+      planningType: draft.type === 'expense' ? draft.planningType : 'unknown',
+      isLazyEntry: draft.isLazyEntry,
+      transactionAt: combineDateAndTime(draft.transactionDate, draft.transactionTime),
+    };
+
+    if (!allowDuplicate) {
+      const duplicate = findDuplicateTransaction(
+        {
+          id: draft.id || null,
+          type: payload.type,
+          amount: payload.amount,
+          accountId: payload.accountId,
+          toAccountId: payload.toAccountId,
+          savingsGoalId: payload.savingsGoalId,
+          fromSavingsGoalId: payload.fromSavingsGoalId,
+          categoryId: payload.categoryId,
+        },
+        transactions
+      );
+
+      if (duplicate) {
+        setDuplicatePrompt({
+          candidate: duplicate,
+          allowNegative,
+          allowBudgetOverride,
+        });
+        return;
+      }
+    }
+
     try {
       setSaving(true);
-      const payload = {
-        userId: user.id,
-        type: draft.type,
-        amount: Number(draft.amount),
-        accountId: draft.accountId || null,
-        toAccountId: draft.type === 'transfer' ? draft.toAccountId || null : null,
-        savingsGoalId: (draft.type === 'income' || draft.type === 'transfer') ? draft.toSavingsGoalId || null : null,
-        fromSavingsGoalId: (draft.type === 'expense' || draft.type === 'transfer') ? draft.fromSavingsGoalId || null : null,
-        categoryId: draft.type === 'transfer' ? null : draft.categoryId || null,
-        notes: draft.notes,
-        photoUrl: draft.photoUrl || null,
-        locationName: draft.locationName || null,
-        isImpulse: draft.type === 'expense' ? draft.isImpulse : false,
-        isLazyEntry: draft.isLazyEntry,
-        transactionAt: combineDateAndTime(draft.transactionDate, draft.transactionTime),
-      };
-
       if (draft.id) {
         await updateTransaction({ id: draft.id, ...payload });
       } else {
@@ -368,6 +665,75 @@ export function AddTransactionScreen() {
     setStatus(null);
   }
 
+  function buildTemplateInput(): TemplateMutationInput | null {
+    if (!user) return null;
+    const draftAmount = draft.amount.trim() ? Number(draft.amount) : null;
+    if (draftAmount !== null && (!Number.isFinite(draftAmount) || draftAmount <= 0)) {
+      setStatus('Template amount must be blank or greater than zero.');
+      return null;
+    }
+
+    const name =
+      draft.notes.trim() ||
+      categories.find((category) => category.id === draft.categoryId)?.name ||
+      `${capitalize(draft.type)} template`;
+
+    return {
+      userId: user.id,
+      name,
+      type: draft.type,
+      defaultAmount: draftAmount,
+      accountId: draft.accountId || null,
+      toAccountId: draft.toAccountId || null,
+      savingsGoalId: draft.toSavingsGoalId || null,
+      fromSavingsGoalId: draft.fromSavingsGoalId || null,
+      categoryId: draft.categoryId || null,
+      notes: draft.notes || null,
+      isPlannedDefault: draft.isImpulse ? false : draft.type === 'expense',
+      isImpulseDefault: draft.type === 'expense' ? draft.isImpulse : false,
+    };
+  }
+
+  async function handleSaveTemplate() {
+    if (!user || savingTemplate) return;
+    const input = buildTemplateInput();
+    if (!input) return;
+
+    try {
+      setSavingTemplate(true);
+      const conflict = await checkTransactionTemplateConflict(input);
+      if (conflict?.kind === 'same-name') {
+        setTemplateOverwritePrompt({ existing: conflict.template, input });
+        return;
+      }
+      await createTransactionTemplate(input);
+      setStatus('Template saved.');
+      await refresh();
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : 'Failed to save template.');
+    } finally {
+      setSavingTemplate(false);
+    }
+  }
+
+  async function handleOverwriteTemplate() {
+    if (!templateOverwritePrompt || savingTemplate) return;
+    try {
+      setSavingTemplate(true);
+      await updateTransactionTemplate({
+        id: templateOverwritePrompt.existing.id,
+        ...templateOverwritePrompt.input,
+      });
+      setTemplateOverwritePrompt(null);
+      setStatus('Template updated.');
+      await refresh();
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : 'Failed to update template.');
+    } finally {
+      setSavingTemplate(false);
+    }
+  }
+
   function toggleLazyEntry() {
     setDraft((current) => {
       const turningOn = !current.isLazyEntry;
@@ -378,6 +744,7 @@ export function AddTransactionScreen() {
         type: nextType,
         lastNonLazyType: turningOn && current.type === 'transfer' ? current.type : current.lastNonLazyType,
         toAccountId: turningOn ? '' : current.toAccountId,
+        transferFee: turningOn ? '' : current.transferFee,
         fromSavingsGoalId: turningOn && nextType === 'income' ? '' : current.fromSavingsGoalId,
         toSavingsGoalId: turningOn && nextType === 'expense' ? '' : current.toSavingsGoalId,
         categoryId: turningOn ? '' : current.categoryId,
@@ -385,30 +752,62 @@ export function AddTransactionScreen() {
     });
   }
 
-  function setDraftToCurrentMoment() {
-    const now = new Date();
+  function selectPaymentOption(option: { id: string; kind: 'account' | 'savings' }) {
     setDraft((current) => ({
       ...current,
-      transactionDate: toDateKey(now),
-      transactionTime: toTimeKey(now),
+      accountId: option.kind === 'account' ? option.id : '',
+      fromSavingsGoalId: current.type === 'expense' && option.kind === 'savings' ? option.id : '',
+      toSavingsGoalId: current.type === 'income' && option.kind === 'savings' ? option.id : '',
+      toAccountId:
+        current.type === 'transfer' && option.kind === 'account' && current.toAccountId === option.id
+          ? ''
+          : current.toAccountId,
+    }));
+  }
+
+  function selectTransferSource(option: { id: string; kind: 'account' | 'savings' }) {
+    setDraft((current) => ({
+      ...current,
+      accountId: option.kind === 'account' ? option.id : '',
+      fromSavingsGoalId: option.kind === 'savings' ? option.id : '',
+      toAccountId:
+        option.kind === 'account' && current.toAccountId === option.id ? '' : current.toAccountId,
+      toSavingsGoalId:
+        option.kind === 'savings' && current.toSavingsGoalId === option.id
+          ? ''
+          : current.toSavingsGoalId,
+    }));
+  }
+
+  function selectTransferDestination(option: { id: string; kind: 'account' | 'savings' }) {
+    setDraft((current) => ({
+      ...current,
+      toAccountId: option.kind === 'account' ? option.id : '',
+      toSavingsGoalId: option.kind === 'savings' ? option.id : '',
+      accountId:
+        option.kind === 'account' && current.accountId === option.id ? '' : current.accountId,
+      fromSavingsGoalId:
+        option.kind === 'savings' && current.fromSavingsGoalId === option.id
+          ? ''
+          : current.fromSavingsGoalId,
     }));
   }
 
   return (
-    <ScrollView style={styles.screen} contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+    <ScrollView style={[styles.screen, { backgroundColor: theme.canvas }]} contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
       <View style={styles.headerRow}>
-        <Pressable onPress={() => router.back()} style={styles.backButton}>
-          <Ionicons name="arrow-back" size={22} color={colors.ink} />
+        <Pressable onPress={() => router.back()} style={[styles.backButton, { backgroundColor: theme.surface, borderColor: theme.border }]}>
+          <Ionicons name="arrow-back" size={22} color={theme.ink} />
         </Pressable>
-        <Text style={styles.pageTitle}>
+        <Text style={[styles.pageTitle, { color: theme.ink }]}>
           {isEditing ? (draft.isLazyEntry ? 'Edit Incomplete Entry' : 'Edit Transaction') : 'Add Transaction'}
         </Text>
         <View style={{ width: 40 }} />
       </View>
 
-      {status ? <Text style={styles.status}>{status}</Text> : null}
+      {status ? <Text style={[styles.status, { color: theme.ink }]}>{status}</Text> : null}
 
-      <View style={[styles.card, shadows.small]}>
+      <View style={[styles.card, shadows.small, { backgroundColor: theme.surface, borderColor: theme.border }]}>
         <Pressable
           onPress={toggleLazyEntry}
           style={[styles.flagRow, draft.isLazyEntry && styles.flagRowActive]}
@@ -416,6 +815,22 @@ export function AddTransactionScreen() {
           <Text style={[styles.flagText, draft.isLazyEntry && styles.flagTextActive]}>
             {draft.isLazyEntry ? 'Lazy entry is on' : 'Turn on lazy entry'}
           </Text>
+        </Pressable>
+
+        <Pressable
+          onPress={() => setTemplatePickerVisible(true)}
+          style={[styles.templateButton, { backgroundColor: theme.surfaceSecondary, borderColor: theme.border }]}
+        >
+          <Ionicons name="copy-outline" size={18} color={colors.primary} />
+          <View style={styles.templateButtonCopy}>
+            <Text style={[styles.templateButtonTitle, { color: theme.ink }]}>Use Template</Text>
+            <Text style={[styles.templateButtonMeta, { color: theme.mutedInk }]}>
+              {templates.length > 0
+                ? `${templates.length} saved template${templates.length === 1 ? '' : 's'}`
+                : 'No saved templates yet'}
+            </Text>
+          </View>
+          <Ionicons name="chevron-forward" size={18} color={theme.mutedInk} />
         </Pressable>
 
         {draft.isLazyEntry ? (
@@ -428,10 +843,27 @@ export function AddTransactionScreen() {
           value={draft.amount}
           onChangeText={(value) => setDraft((current) => ({ ...current, amount: value }))}
           placeholder="Amount"
-          placeholderTextColor={colors.mutedInk}
+          placeholderTextColor={theme.mutedInk}
           keyboardType="decimal-pad"
-          style={styles.input}
+          style={[styles.input, inputThemeStyle]}
         />
+        {draft.type === 'transfer' ? (
+          <>
+            <TextInput
+              value={draft.transferFee}
+              onChangeText={(value) => setDraft((current) => ({ ...current, transferFee: value }))}
+              placeholder="Transfer fee (optional)"
+              placeholderTextColor={theme.mutedInk}
+              keyboardType="decimal-pad"
+              style={[styles.input, inputThemeStyle]}
+            />
+            {Number(draft.amount) > 0 ? (
+              <Text style={styles.helperText}>
+                Receiver gets {formatMoney(getTransferPreviewAmount(draft.amount, draft.transferFee))} after fee.
+              </Text>
+            ) : null}
+          </>
+        ) : null}
 
         <View style={styles.chipRow}>
           {transactionTypes.map((type) => {
@@ -447,15 +879,22 @@ export function AddTransactionScreen() {
                     lastNonLazyType: !current.isLazyEntry ? type : current.lastNonLazyType,
                     categoryId: type === 'transfer' ? '' : current.categoryId,
                     toAccountId: type === 'transfer' ? current.toAccountId : '',
+                    transferFee: type === 'transfer' ? current.transferFee : '',
                     isImpulse: type === 'expense' ? current.isImpulse : false,
+                    planningType:
+                      type === 'expense'
+                        ? current.planningType
+                        : 'unknown',
+                    expenseSaveTarget:
+                      type === 'expense' ? current.expenseSaveTarget : 'transaction',
                   }))
                 }
-                style={[styles.chip, draft.type === type && styles.chipActive, disabled && styles.chipDisabled]}
+                style={[styles.chip, chipThemeStyle, draft.type === type && chipActiveThemeStyle, disabled && styles.chipDisabled]}
               >
                 <Text
                   style={[
                     styles.chipLabel,
-                    draft.type === type && styles.chipLabelActive,
+                    { color: draft.type === type ? theme.surface : theme.ink },
                     disabled && styles.chipLabelDisabled,
                   ]}
                 >
@@ -466,7 +905,7 @@ export function AddTransactionScreen() {
           })}
         </View>
 
-        <Text style={styles.selectorLabel}>Date and time</Text>
+        <Text style={[styles.selectorLabel, { color: theme.mutedInk }]}>Date and time</Text>
         <View style={styles.inputRow}>
           <DatePickerField
             value={draft.transactionDate}
@@ -481,209 +920,43 @@ export function AddTransactionScreen() {
             style={styles.rowInput}
           />
         </View>
-        <View style={styles.inlineActionsRow}>
-          <Text style={styles.helperText}>Tap fields to pick date and time.</Text>
-          <Pressable onPress={setDraftToCurrentMoment}>
-            <Text style={styles.inlineAction}>Use now</Text>
-          </Pressable>
-        </View>
-
-        {draft.isLazyEntry ? (
-          <Text style={styles.emptyText}>
-            Lazy entry can still affect a selected account or spendable savings now. Add category
-            and other details later.
-          </Text>
-        ) : (
+        {draft.isLazyEntry ? null : (
           <>
-            <Text style={styles.selectorLabel}>{draft.type === 'transfer' ? 'From account' : 'Account'}</Text>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipRow}>
-              {accounts.map((account) => (
-                <Pressable
-                  key={account.id}
-                  onPress={() =>
-                    setDraft((current) => ({
-                      ...current,
-                      accountId: account.id,
-                      fromSavingsGoalId: '',
-                      toSavingsGoalId: '',
-                      toAccountId:
-                        current.type === 'transfer' && current.toAccountId === account.id
-                          ? ''
-                          : current.toAccountId,
-                    }))
-                  }
-                  style={[styles.chip, draft.accountId === account.id && styles.chipActive]}
-                >
-                  <Text
-                    style={[styles.chipLabel, draft.accountId === account.id && styles.chipLabelActive]}
-                  >
-                    {formatAccountLabel(account)}
-                  </Text>
-                </Pressable>
-              ))}
-            </ScrollView>
-
-            {savingsList.length > 0 && draft.type === 'expense' && (
-              <>
-                <Text style={styles.subLabel}>or from savings</Text>
-                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipRow}>
-                  {spendableSavings.map((s) => (
-                    <Pressable
-                      key={s.id}
-                      onPress={() =>
-                        setDraft((current) => ({
-                          ...current,
-                          fromSavingsGoalId: current.fromSavingsGoalId === s.id ? '' : s.id,
-                          accountId: '',
-                        }))
-                      }
-                      style={[styles.chip, draft.fromSavingsGoalId === s.id && styles.chipActive]}
-                    >
-                      <Text
-                        style={[
-                          styles.chipLabel,
-                          draft.fromSavingsGoalId === s.id && styles.chipLabelActive,
-                        ]}
-                      >
-                        {s.name}
-                      </Text>
-                    </Pressable>
-                  ))}
-                </ScrollView>
-              </>
-            )}
-
-            {savingsList.length > 0 && draft.type === 'income' && (
-              <>
-                <Text style={styles.subLabel}>or to savings</Text>
-                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipRow}>
-                  {savingsList.map((s) => (
-                    <Pressable
-                      key={s.id}
-                      onPress={() =>
-                        setDraft((current) => ({
-                          ...current,
-                          toSavingsGoalId: current.toSavingsGoalId === s.id ? '' : s.id,
-                          accountId: '',
-                        }))
-                      }
-                      style={[styles.chip, draft.toSavingsGoalId === s.id && styles.chipActive]}
-                    >
-                      <Text
-                        style={[
-                          styles.chipLabel,
-                          draft.toSavingsGoalId === s.id && styles.chipLabelActive,
-                        ]}
-                      >
-                        {s.name}
-                      </Text>
-                    </Pressable>
-                  ))}
-                </ScrollView>
-              </>
-            )}
+            <Text style={[styles.selectorLabel, { color: theme.mutedInk }]}>
+              {draft.type === 'transfer' ? 'From' : draft.type === 'income' ? 'Deposit to' : 'Pay with'}
+            </Text>
+            <MoneyOptionChips
+              options={draft.type === 'transfer' ? transferSourceOptions : paymentOptions}
+              selectedAccountId={draft.accountId}
+              selectedSavingsId={draft.type === 'income' ? draft.toSavingsGoalId : draft.fromSavingsGoalId}
+              onSelect={draft.type === 'transfer' ? selectTransferSource : selectPaymentOption}
+              emptyLabel={
+                draft.type === 'expense'
+                  ? 'Add a spendable account or spendable savings goal first.'
+                  : 'Add an account or savings goal first.'
+              }
+            />
 
             {draft.type === 'transfer' ? (
               <>
-                {savingsList.length > 0 && (
-                  <>
-                    <Text style={styles.subLabel}>or from savings</Text>
-                    <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipRow}>
-                      {availableSourceSavings.map((s) => (
-                        <Pressable
-                          key={s.id}
-                          onPress={() =>
-                            setDraft((current) => ({
-                              ...current,
-                              fromSavingsGoalId: s.id,
-                              accountId: '',
-                              toSavingsGoalId:
-                                current.toSavingsGoalId === s.id ? '' : current.toSavingsGoalId,
-                            }))
-                          }
-                          style={[styles.chip, draft.fromSavingsGoalId === s.id && styles.chipActive]}
-                        >
-                          <Text
-                            style={[
-                              styles.chipLabel,
-                              draft.fromSavingsGoalId === s.id && styles.chipLabelActive,
-                            ]}
-                          >
-                            {s.name}
-                          </Text>
-                        </Pressable>
-                      ))}
-                    </ScrollView>
-                  </>
-                )}
-
-                <Text style={styles.selectorLabel}>To account</Text>
-                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipRow}>
-                  {destinationAccounts.map((account) => (
-                    <Pressable
-                      key={account.id}
-                      onPress={() => setDraft((current) => ({ ...current, toAccountId: account.id, toSavingsGoalId: '' }))}
-                      style={[styles.chip, draft.toAccountId === account.id && styles.chipActive]}
-                    >
-                      <Text
-                        style={[
-                          styles.chipLabel,
-                          draft.toAccountId === account.id && styles.chipLabelActive,
-                        ]}
-                      >
-                        {formatAccountLabel(account)}
-                      </Text>
-                    </Pressable>
-                  ))}
-                </ScrollView>
-
-                {savingsList.length > 0 && (
-                  <>
-                    <Text style={styles.subLabel}>or to savings</Text>
-                    <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipRow}>
-                      {availableDestSavings.map((s) => (
-                        <Pressable
-                          key={s.id}
-                          onPress={() =>
-                            setDraft((current) => ({
-                              ...current,
-                              toSavingsGoalId: s.id,
-                              toAccountId: '',
-                              fromSavingsGoalId:
-                                current.fromSavingsGoalId === s.id ? '' : current.fromSavingsGoalId,
-                            }))
-                          }
-                          style={[styles.chip, draft.toSavingsGoalId === s.id && styles.chipActive]}
-                        >
-                          <Text
-                            style={[
-                              styles.chipLabel,
-                              draft.toSavingsGoalId === s.id && styles.chipLabelActive,
-                            ]}
-                          >
-                            {s.name}
-                          </Text>
-                        </Pressable>
-                      ))}
-                    </ScrollView>
-                  </>
-                )}
-
-                {destinationAccounts.length === 0 && availableDestSavings.length === 0 && (
-                  <Text style={styles.emptyText}>
-                    Add an account or savings to use as transfer destination.
-                  </Text>
-                )}
+                <Text style={[styles.selectorLabel, { color: theme.mutedInk }]}>To</Text>
+                <MoneyOptionChips
+                  options={transferDestinationOptions}
+                  selectedAccountId={draft.toAccountId}
+                  selectedSavingsId={draft.toSavingsGoalId}
+                  onSelect={selectTransferDestination}
+                  emptyLabel="Add another account or savings goal for transfers."
+                />
               </>
             ) : (
               <>
-                <Text style={styles.selectorLabel}>Category</Text>
+                <Text style={[styles.selectorLabel, { color: theme.mutedInk }]}>Category</Text>
                 <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipRow}>
                   <Pressable
                     onPress={() => setDraft((current) => ({ ...current, categoryId: '' }))}
-                    style={[styles.chip, !draft.categoryId && styles.chipActive]}
+                    style={[styles.chip, chipThemeStyle, !draft.categoryId && chipActiveThemeStyle]}
                   >
-                    <Text style={[styles.chipLabel, !draft.categoryId && styles.chipLabelActive]}>
+                    <Text style={[styles.chipLabel, { color: !draft.categoryId ? theme.surface : theme.ink }]}>
                       Uncategorised
                     </Text>
                   </Pressable>
@@ -691,12 +964,12 @@ export function AddTransactionScreen() {
                     <Pressable
                       key={category.id}
                       onPress={() => setDraft((current) => ({ ...current, categoryId: category.id }))}
-                      style={[styles.chip, draft.categoryId === category.id && styles.chipActive]}
+                      style={[styles.chip, chipThemeStyle, draft.categoryId === category.id && chipActiveThemeStyle]}
                     >
                       <Text
                         style={[
                           styles.chipLabel,
-                          draft.categoryId === category.id && styles.chipLabelActive,
+                          { color: draft.categoryId === category.id ? theme.surface : theme.ink },
                         ]}
                       >
                         {category.name}
@@ -709,9 +982,9 @@ export function AddTransactionScreen() {
                       setNewCategoryName('');
                       setNewCategoryType('both');
                     }}
-                    style={[styles.chip, isCreatingCategory && styles.chipActive]}
+                    style={[styles.chip, chipThemeStyle, isCreatingCategory && chipActiveThemeStyle]}
                   >
-                    <Text style={[styles.chipLabel, isCreatingCategory && styles.chipLabelActive]}>
+                    <Text style={[styles.chipLabel, { color: isCreatingCategory ? theme.surface : theme.ink }]}>
                       + New category
                     </Text>
                   </Pressable>
@@ -723,8 +996,8 @@ export function AddTransactionScreen() {
                       value={newCategoryName}
                       onChangeText={setNewCategoryName}
                       placeholder="Category name"
-                      placeholderTextColor={colors.mutedInk}
-                      style={styles.input}
+                      placeholderTextColor={theme.mutedInk}
+                      style={[styles.input, inputThemeStyle]}
                       autoFocus
                     />
                     <View style={styles.chipRow}>
@@ -732,12 +1005,12 @@ export function AddTransactionScreen() {
                         <Pressable
                           key={type}
                           onPress={() => setNewCategoryType(type)}
-                          style={[styles.chip, newCategoryType === type && styles.chipActive]}
+                          style={[styles.chip, chipThemeStyle, newCategoryType === type && chipActiveThemeStyle]}
                         >
                           <Text
                             style={[
                               styles.chipLabel,
-                              newCategoryType === type && styles.chipLabelActive,
+                              { color: newCategoryType === type ? theme.surface : theme.ink },
                             ]}
                           >
                             {capitalize(type)}
@@ -777,9 +1050,9 @@ export function AddTransactionScreen() {
                           setIsCreatingCategory(false);
                           setNewCategoryName('');
                         }}
-                        style={styles.secondaryButton}
+                        style={[styles.secondaryButton, { backgroundColor: theme.surfaceSecondary, borderColor: theme.border }]}
                       >
-                        <Text style={styles.secondaryButtonLabel}>Cancel</Text>
+                        <Text style={[styles.secondaryButtonLabel, { color: theme.ink }]}>Cancel</Text>
                       </Pressable>
                     </View>
                   </View>
@@ -791,121 +1064,114 @@ export function AddTransactionScreen() {
 
         {draft.isLazyEntry ? (
           <>
-            <Text style={styles.selectorLabel}>Account</Text>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipRow}>
-              {accounts.map((account) => (
+            <Text style={[styles.selectorLabel, { color: theme.mutedInk }]}>
+              {draft.type === 'income' ? 'Deposit to' : 'Pay with'}
+            </Text>
+            <MoneyOptionChips
+              options={paymentOptions}
+              selectedAccountId={draft.accountId}
+              selectedSavingsId={draft.type === 'income' ? draft.toSavingsGoalId : draft.fromSavingsGoalId}
+              onSelect={selectPaymentOption}
+              emptyLabel="Add a spendable account or savings goal first."
+              allowDeselect
+            />
+          </>
+        ) : null}
+
+        {!isEditing && draft.type === 'expense' ? (
+          <>
+            <Text style={styles.selectorLabel}>Expense destination</Text>
+            <View style={styles.chipRow}>
+              {[
+                { value: 'transaction', label: 'Transaction' },
+                { value: 'wishlist', label: 'Wishlist' },
+                { value: 'waiting_room', label: 'Waiting Room' },
+              ].map((option) => (
                 <Pressable
-                  key={account.id}
+                  key={option.value}
                   onPress={() =>
                     setDraft((current) => ({
                       ...current,
-                      accountId: current.accountId === account.id ? '' : account.id,
-                      fromSavingsGoalId: '',
-                      toSavingsGoalId: '',
+                      expenseSaveTarget: option.value as TransactionDraft['expenseSaveTarget'],
                     }))
                   }
-                  style={[styles.chip, draft.accountId === account.id && styles.chipActive]}
+                  style={[
+                    styles.chip,
+                    chipThemeStyle,
+                    draft.expenseSaveTarget === option.value && chipActiveThemeStyle,
+                  ]}
                 >
                   <Text
-                    style={[styles.chipLabel, draft.accountId === account.id && styles.chipLabelActive]}
+                    style={[
+                      styles.chipLabel,
+                      { color: draft.expenseSaveTarget === option.value ? theme.surface : theme.ink },
+                    ]}
                   >
-                    {formatAccountLabel(account)}
+                    {option.label}
                   </Text>
                 </Pressable>
               ))}
-            </ScrollView>
-
-            {draft.type === 'expense' && spendableSavings.length > 0 ? (
-              <>
-                <Text style={styles.subLabel}>or from spendable savings</Text>
-                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipRow}>
-                  {spendableSavings.map((s) => (
-                    <Pressable
-                      key={s.id}
-                      onPress={() =>
-                        setDraft((current) => ({
-                          ...current,
-                          fromSavingsGoalId: current.fromSavingsGoalId === s.id ? '' : s.id,
-                          accountId: '',
-                        }))
-                      }
-                      style={[styles.chip, draft.fromSavingsGoalId === s.id && styles.chipActive]}
-                    >
-                      <Text
-                        style={[
-                          styles.chipLabel,
-                          draft.fromSavingsGoalId === s.id && styles.chipLabelActive,
-                        ]}
-                      >
-                        {s.name}
-                      </Text>
-                    </Pressable>
-                  ))}
-                </ScrollView>
-              </>
-            ) : null}
-
-            {draft.type === 'income' && spendableSavings.length > 0 ? (
-              <>
-                <Text style={styles.subLabel}>or to spendable savings</Text>
-                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipRow}>
-                  {spendableSavings.map((s) => (
-                    <Pressable
-                      key={s.id}
-                      onPress={() =>
-                        setDraft((current) => ({
-                          ...current,
-                          toSavingsGoalId: current.toSavingsGoalId === s.id ? '' : s.id,
-                          accountId: '',
-                        }))
-                      }
-                      style={[styles.chip, draft.toSavingsGoalId === s.id && styles.chipActive]}
-                    >
-                      <Text
-                        style={[
-                          styles.chipLabel,
-                          draft.toSavingsGoalId === s.id && styles.chipLabelActive,
-                        ]}
-                      >
-                        {s.name}
-                      </Text>
-                    </Pressable>
-                  ))}
-                </ScrollView>
-              </>
+            </View>
+            {isSafetyCapture ? (
+              <Text style={[styles.helperText, { color: theme.mutedInk }]}>
+                This saves the expense idea for review and does not change balances.
+              </Text>
             ) : null}
           </>
         ) : null}
 
         {draft.type === 'expense' ? (
-          <Pressable
-            onPress={() => setDraft((current) => ({ ...current, isImpulse: !current.isImpulse }))}
-            style={[styles.flagRow, draft.isImpulse && styles.flagRowActive]}
-          >
-            <Text style={[styles.flagText, draft.isImpulse && styles.flagTextActive]}>
-              Mark as impulse spend
-            </Text>
-          </Pressable>
+          <>
+            <Text style={[styles.selectorLabel, { color: theme.mutedInk }]}>Planning type</Text>
+            <View style={styles.chipRow}>
+              {expensePlanningOptions.map((option) => (
+                <Pressable
+                  key={option.value}
+                  onPress={() =>
+                    setDraft((current) => ({
+                      ...current,
+                      planningType: option.value,
+                      isImpulse: option.value === 'impulse',
+                    }))
+                  }
+                  style={[
+                    styles.chip,
+                    chipThemeStyle,
+                    draft.planningType === option.value && chipActiveThemeStyle,
+                  ]}
+                >
+                  <Text
+                    style={[
+                      styles.chipLabel,
+                      { color: draft.planningType === option.value ? theme.surface : theme.ink },
+                    ]}
+                  >
+                    {option.label}
+                  </Text>
+                </Pressable>
+              ))}
+            </View>
+          </>
         ) : null}
 
         <TextInput
           value={draft.notes}
           onChangeText={(value) => setDraft((current) => ({ ...current, notes: value }))}
           placeholder="Notes"
-          placeholderTextColor={colors.mutedInk}
+          placeholderTextColor={theme.mutedInk}
           multiline
-          style={[styles.input, styles.notesInput]}
+          style={[styles.input, styles.notesInput, inputThemeStyle]}
         />
 
         <TextInput
           value={draft.locationName}
           onChangeText={(value) => setDraft((current) => ({ ...current, locationName: value }))}
           placeholder="Location (optional)"
-          placeholderTextColor={colors.mutedInk}
-          style={styles.input}
+          placeholderTextColor={theme.mutedInk}
+          style={[styles.input, inputThemeStyle]}
         />
 
-        <Text style={styles.selectorLabel}>Receipt photo</Text>
+        <Text style={[styles.selectorLabel, { color: theme.mutedInk }]}>Receipt photo</Text>
         {draft.photoUrl ? (
           <View style={styles.photoPreviewBox}>
             <Image source={{ uri: draft.photoUrl }} style={styles.photoPreview} />
@@ -930,7 +1196,7 @@ export function AddTransactionScreen() {
                 setDraft((current) => ({ ...current, photoUrl: result.assets[0].uri }));
               }
             }}
-            style={styles.photoButton}
+            style={[styles.photoButton, { backgroundColor: theme.surfaceSecondary, borderColor: theme.border }]}
           >
             <Ionicons name="images-outline" size={18} color={colors.primary} />
             <Text style={styles.photoButtonLabel}>Gallery</Text>
@@ -947,14 +1213,14 @@ export function AddTransactionScreen() {
                 setDraft((current) => ({ ...current, photoUrl: result.assets[0].uri }));
               }
             }}
-            style={styles.photoButton}
+            style={[styles.photoButton, { backgroundColor: theme.surfaceSecondary, borderColor: theme.border }]}
           >
             <Ionicons name="camera-outline" size={18} color={colors.primary} />
             <Text style={styles.photoButtonLabel}>Camera</Text>
           </Pressable>
         </View>
 
-        {!draft.isLazyEntry && accounts.length === 0 && savingsList.length === 0 ? (
+        {!draft.isLazyEntry && !isSafetyCapture && accounts.length === 0 && savingsList.length === 0 ? (
           <Text style={styles.emptyText}>
             Create at least one account or savings goal in Settings before recording a completed transaction.
           </Text>
@@ -974,17 +1240,107 @@ export function AddTransactionScreen() {
                     ? 'Update Incomplete Entry'
                     : 'Save Completed Entry'
                   : draft.isLazyEntry
-                    ? 'Save Lazy Entry'
-                    : 'Save Transaction'}
+                    ? draft.type === 'expense' && draft.expenseSaveTarget === 'wishlist'
+                      ? 'Save to Wishlist'
+                      : draft.type === 'expense' && draft.expenseSaveTarget === 'waiting_room'
+                        ? 'Save to Waiting Room'
+                        : 'Save Lazy Entry'
+                    : draft.type === 'expense' && draft.expenseSaveTarget === 'wishlist'
+                      ? 'Save to Wishlist'
+                      : draft.type === 'expense' && draft.expenseSaveTarget === 'waiting_room'
+                        ? 'Save to Waiting Room'
+                        : 'Save Transaction'}
             </Text>
           </Pressable>
           {isEditing || draft.amount || draft.notes || draft.isLazyEntry ? (
-            <Pressable onPress={resetDraft} style={styles.secondaryButton}>
-              <Text style={styles.secondaryButtonLabel}>Reset</Text>
+            <Pressable onPress={resetDraft} style={[styles.secondaryButton, { backgroundColor: theme.surfaceSecondary, borderColor: theme.border }]}>
+              <Text style={[styles.secondaryButtonLabel, { color: theme.ink }]}>Reset</Text>
+            </Pressable>
+          ) : null}
+          {draft.amount || draft.categoryId || draft.notes ? (
+            <Pressable
+              onPress={handleSaveTemplate}
+              disabled={savingTemplate}
+              style={[styles.secondaryButton, { backgroundColor: theme.surfaceSecondary, borderColor: theme.border }, savingTemplate && styles.primaryButtonDisabled]}
+            >
+              <Text style={[styles.secondaryButtonLabel, { color: theme.ink }]}>
+                {savingTemplate ? 'Saving Template...' : 'Save as Template'}
+              </Text>
             </Pressable>
           ) : null}
         </View>
       </View>
+
+      <AppModal
+        visible={templatePickerVisible}
+        title="Use Template"
+        message={
+          templates.length === 0
+            ? 'Create templates from this screen or the Templates manager first.'
+            : 'Choose a saved template to prefill this transaction.'
+        }
+        onRequestClose={() => setTemplatePickerVisible(false)}
+        buttons={[
+          {
+            text: templates.length === 0 ? 'Open Templates' : 'Close',
+            style: templates.length === 0 ? 'default' : 'cancel',
+            onPress: () => {
+              setTemplatePickerVisible(false);
+              if (templates.length === 0) {
+                router.push('/templates' as any);
+              }
+            },
+          },
+        ]}
+      >
+        {templates.length > 0 ? (
+          <ScrollView style={styles.templateList} contentContainerStyle={styles.templateListContent}>
+            {templates.map((template) => (
+              <Pressable
+                key={template.id}
+                onPress={() => {
+                  applyTemplate(template);
+                  setAppliedTemplateId(template.id);
+                  setTemplatePickerVisible(false);
+                  setStatus(`Template loaded: ${template.name}`);
+                }}
+                style={styles.templateRow}
+              >
+                <View style={styles.templateRowCopy}>
+                  <Text style={styles.templateRowTitle}>{template.name}</Text>
+                  <Text style={styles.templateRowMeta}>
+                    {capitalize(template.type)}
+                    {template.defaultAmount ? ` | ${formatMoney(template.defaultAmount)}` : ''}
+                  </Text>
+                </View>
+                <Ionicons name="chevron-forward" size={18} color={colors.mutedInk} />
+              </Pressable>
+            ))}
+          </ScrollView>
+        ) : null}
+      </AppModal>
+
+      <AppModal
+        visible={Boolean(templateOverwritePrompt)}
+        title="Rewrite Template?"
+        message={
+          templateOverwritePrompt
+            ? `A template named "${templateOverwritePrompt.existing.name}" already exists with different values. Rewrite it with the current values?`
+            : undefined
+        }
+        onRequestClose={() => setTemplateOverwritePrompt(null)}
+        buttons={[
+          {
+            text: 'Cancel Template',
+            style: 'cancel',
+            onPress: () => setTemplateOverwritePrompt(null),
+          },
+          {
+            text: savingTemplate ? 'Saving...' : 'Proceed',
+            onPress: handleOverwriteTemplate,
+          },
+        ]}
+      />
 
       <ConfirmModal
         visible={confirmModal.visible}
@@ -1044,6 +1400,49 @@ export function AddTransactionScreen() {
       />
 
       <AppModal
+        visible={Boolean(duplicatePrompt)}
+        title="Possible Duplicate"
+        message={
+          duplicatePrompt
+            ? buildDuplicateWarningMessage(duplicatePrompt.candidate)
+            : undefined
+        }
+        onRequestClose={() => setDuplicatePrompt(null)}
+        buttons={[
+          {
+            text: 'Cancel',
+            style: 'cancel',
+            onPress: () => setDuplicatePrompt(null),
+          },
+          {
+            text: 'Edit Existing',
+            style: 'cancel',
+            onPress: () => {
+              const id = duplicatePrompt?.candidate.transaction.id;
+              setDuplicatePrompt(null);
+              if (id) {
+                router.push(`/add-transaction?editId=${id}` as any);
+              }
+            },
+          },
+          {
+            text: 'Add Anyway',
+            onPress: () => {
+              const pending = duplicatePrompt;
+              setDuplicatePrompt(null);
+              if (pending) {
+                handleSaveTransaction(
+                  pending.allowNegative,
+                  pending.allowBudgetOverride,
+                  true
+                );
+              }
+            },
+          },
+        ]}
+      />
+
+      <AppModal
         visible={Boolean(spendableBalancePrompt)}
         title="Spendable Balance Exceeded"
         message={
@@ -1070,8 +1469,98 @@ function buildSaveMessage(draft: TransactionDraft) {
   return draft.isLazyEntry ? 'Lazy entry saved.' : `${capitalize(draft.type)} recorded.`;
 }
 
+function MoneyOptionChips({
+  options,
+  selectedAccountId,
+  selectedSavingsId,
+  onSelect,
+  emptyLabel,
+}: {
+  options: { id: string; label: string; kind: 'account' | 'savings' }[];
+  selectedAccountId: string;
+  selectedSavingsId: string;
+  onSelect: (option: { id: string; kind: 'account' | 'savings' }) => void;
+  emptyLabel: string;
+  allowDeselect?: boolean;
+}) {
+  const { themeMode } = useAppPreferences();
+  const theme = getThemeColors(themeMode);
+
+  if (options.length === 0) {
+    return <Text style={[styles.emptyText, { color: theme.mutedInk }]}>{emptyLabel}</Text>;
+  }
+
+  return (
+    <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.moneyOptionRow}>
+      {options.map((option) => {
+        const selected =
+          option.kind === 'account'
+            ? selectedAccountId === option.id
+            : selectedSavingsId === option.id;
+
+        return (
+          <Pressable
+            key={`${option.kind}-${option.id}`}
+            onPress={() => onSelect(option)}
+            style={[
+              styles.moneyOption,
+              { backgroundColor: theme.surfaceSecondary, borderColor: theme.border },
+              selected && { backgroundColor: theme.primary, borderColor: theme.primary },
+            ]}
+          >
+            <View style={[styles.moneyOptionIcon, { backgroundColor: theme.primaryLight }, selected && styles.moneyOptionIconActive]}>
+              <Ionicons
+                name={option.kind === 'account' ? 'card-outline' : 'flag-outline'}
+                size={14}
+                color={selected ? theme.surface : theme.primary}
+              />
+            </View>
+            <Text
+              style={[styles.moneyOptionLabel, { color: selected ? theme.surface : theme.ink }]}
+              numberOfLines={1}
+            >
+              {option.label}
+            </Text>
+          </Pressable>
+        );
+      })}
+    </ScrollView>
+  );
+}
+
+function getTransferPreviewAmount(amount: string, fee: string) {
+  const amountValue = Number(amount || '0');
+  const feeValue = Number(fee || '0');
+  if (!Number.isFinite(amountValue) || !Number.isFinite(feeValue)) return 0;
+  return Math.max(0, amountValue - feeValue);
+}
+
+function defaultTransactionTitle(transaction: TransactionFeedItem) {
+  return transaction.type === 'transfer' ? 'Transfer' : capitalize(transaction.type);
+}
+
 function capitalize(value: string) {
   return `${value.slice(0, 1).toUpperCase()}${value.slice(1)}`;
+}
+
+function buildDuplicateWarningMessage(candidate: DuplicateTransactionCandidate) {
+  const transaction = candidate.transaction;
+  const label =
+    transaction.categoryName ||
+    transaction.notes?.trim() ||
+    defaultTransactionTitle(transaction);
+  const source =
+    transaction.accountName ||
+    transaction.fromSavingsGoalName ||
+    transaction.savingsGoalName ||
+    transaction.toAccountName ||
+    'an account';
+  const minutes =
+    candidate.minutesAgo <= 0
+      ? 'just now'
+      : `${candidate.minutesAgo} minute${candidate.minutesAgo === 1 ? '' : 's'} ago`;
+
+  return `You already logged ${formatMoney(transaction.amount)} for ${label} from ${source} ${minutes}. Add again?`;
 }
 
 const styles = StyleSheet.create({
@@ -1094,12 +1583,29 @@ const styles = StyleSheet.create({
   chipLabel: { color: colors.ink, fontWeight: '600', fontSize: 12 },
   chipLabelActive: { color: colors.surface },
   chipLabelDisabled: { color: colors.mutedInk },
+  moneyOptionRow: { gap: 8, paddingRight: spacing.md },
+  moneyOption: { width: 132, minHeight: 70, borderRadius: radii.lg, borderWidth: 1, borderColor: colors.border, padding: spacing.sm, backgroundColor: colors.surfaceSecondary, justifyContent: 'space-between' },
+  moneyOptionActive: { backgroundColor: colors.primary, borderColor: colors.primary },
+  moneyOptionIcon: { width: 26, height: 26, borderRadius: 13, backgroundColor: colors.primaryLight, alignItems: 'center', justifyContent: 'center' },
+  moneyOptionIconActive: { backgroundColor: 'rgba(255,255,255,0.18)' },
+  moneyOptionLabel: { color: colors.ink, fontSize: 12, fontWeight: '800' },
+  moneyOptionLabelActive: { color: colors.surface },
   selectorLabel: { color: colors.mutedInk, fontSize: 12, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.8 },
   subLabel: { color: colors.mutedInk, fontSize: 12, fontWeight: '600', marginTop: 8 },
   flagRow: { borderRadius: radii.lg, borderWidth: 1, borderColor: colors.border, paddingHorizontal: 14, paddingVertical: 12, backgroundColor: colors.surfaceSecondary },
   flagRowActive: { backgroundColor: colors.warningLight, borderColor: colors.warning },
   flagText: { color: colors.ink, fontWeight: '600' },
   flagTextActive: { color: colors.warning },
+  templateButton: { flexDirection: 'row', alignItems: 'center', gap: spacing.md, borderRadius: radii.lg, borderWidth: 1, borderColor: colors.border, paddingHorizontal: 14, paddingVertical: 12, backgroundColor: colors.surfaceSecondary },
+  templateButtonCopy: { flex: 1, gap: 2 },
+  templateButtonTitle: { color: colors.ink, fontWeight: '700', fontSize: 14 },
+  templateButtonMeta: { color: colors.mutedInk, fontSize: 12 },
+  templateList: { maxHeight: 320 },
+  templateListContent: { gap: spacing.sm },
+  templateRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.md, borderRadius: radii.lg, borderWidth: 1, borderColor: colors.border, padding: spacing.md, backgroundColor: colors.surfaceSecondary },
+  templateRowCopy: { flex: 1, gap: 2 },
+  templateRowTitle: { color: colors.ink, fontWeight: '700', fontSize: 14 },
+  templateRowMeta: { color: colors.mutedInk, fontSize: 12 },
   inlineCreateBox: { marginTop: 10, padding: 14, borderRadius: radii.lg, backgroundColor: colors.surfaceSecondary, borderWidth: 1, borderColor: colors.border, gap: 10 },
   actionButtons: { gap: 10 },
   primaryButton: { backgroundColor: colors.primary, borderRadius: radii.lg, paddingVertical: 14, alignItems: 'center' },

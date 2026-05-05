@@ -1,7 +1,8 @@
 import { PropsWithChildren } from 'react';
 import { StyleSheet, View, ViewStyle } from 'react-native';
 
-import { colors, radii, shadows, spacing } from '@/shared/theme/colors';
+import { useAppPreferences } from '@/features/preferences/provider/AppPreferencesProvider';
+import { colors, getThemeColors, radii, shadows, spacing } from '@/shared/theme/colors';
 
 type CardProps = PropsWithChildren<{
   style?: ViewStyle;
@@ -10,10 +11,14 @@ type CardProps = PropsWithChildren<{
 }>;
 
 export function Card({ children, style, elevated, noPadding }: CardProps) {
+  const { themeMode } = useAppPreferences();
+  const theme = getThemeColors(themeMode);
+
   return (
     <View
       style={[
         styles.card,
+        { backgroundColor: theme.surface, borderColor: theme.border },
         elevated && styles.elevated,
         noPadding && styles.noPadding,
         style,

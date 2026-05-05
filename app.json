@@ -5,11 +5,15 @@
     "scheme": "studentfinanceapp",
     "version": "0.1.0",
     "orientation": "portrait",
+    "icon": "./appstandalone-icon.png",
     "userInterfaceStyle": "automatic",
     "splash": {
+      "image": "./appsplash-image.png",
+      "resizeMode": "cover",
       "backgroundColor": "#f4efe3"
     },
     "notification": {
+      "icon": "./appnotification-icon1.png",
       "color": "#17281f"
     },
     "backgroundColor": "#f4efe3",
@@ -44,6 +48,21 @@
       "expo-sqlite",
       "expo-web-browser",
       [
+        "expo-splash-screen",
+        {
+          "image": "./appsplash-image.png",
+          "resizeMode": "cover",
+          "backgroundColor": "#f4efe3"
+        }
+      ],
+      [
+        "expo-notifications",
+        {
+          "icon": "./appnotification-icon1.png",
+          "color": "#17281f"
+        }
+      ],
+      [
         "expo-image-picker",
         {
           "photosPermission": "Allow $(PRODUCT_NAME) to access your photos to attach receipt images to transactions.",
@@ -57,10 +76,13 @@
     "android": {
       "package": "com.studentfinance.app",
       "adaptiveIcon": {
+        "foregroundImage": "./appstandalone-icon.png",
+        "monochromeImage": "./appadaptive-icon.png",
         "backgroundColor": "#f4efe3"
       }
     },
     "ios": {
+      "icon": "./appstandalone-icon.png",
       "bundleIdentifier": "com.studentfinance.app"
     },
     "web": {

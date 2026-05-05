@@ -11,7 +11,7 @@ import {
 import { DatePickerField, TimePickerField } from '@/shared/ui/DateTimePickerField';
 import { AppModal } from '@/shared/ui/Modal';
 import { colors, radii, spacing } from '@/shared/theme/colors';
-import { Category, CategoryType } from '@/shared/types/domain';
+import { Category, CategoryType, PlanningType } from '@/shared/types/domain';
 import {
   combineDateAndTime,
   isDateKey,
@@ -27,6 +27,14 @@ type CompleteLazyEntryModalProps = {
   onCompleted: () => void;
 };
 
+const expensePlanningOptions: { value: PlanningType; label: string }[] = [
+  { value: 'planned', label: 'Planned' },
+  { value: 'unplanned', label: 'Unplanned' },
+  { value: 'impulse', label: 'Impulse' },
+  { value: 'emergency', label: 'Emergency' },
+  { value: 'unknown', label: 'Unknown' },
+];
+
 export function CompleteLazyEntryModal({
   visible,
   userId,
@@ -40,6 +48,7 @@ export function CompleteLazyEntryModal({
   const [photoUrl, setPhotoUrl] = useState('');
   const [locationName, setLocationName] = useState('');
   const [isImpulse, setIsImpulse] = useState(false);
+  const [planningType, setPlanningType] = useState<PlanningType>('unknown');
   const [transactionDate, setTransactionDate] = useState('');
   const [transactionTime, setTransactionTime] = useState('');
   const [saving, setSaving] = useState(false);
@@ -61,7 +70,18 @@ export function CompleteLazyEntryModal({
     setNotes(transaction.notes ?? '');
     setPhotoUrl(transaction.photoUrl ?? '');
     setLocationName(transaction.locationName ?? '');
-    setIsImpulse(transaction.type === 'expense' ? transaction.isImpulse : false);
+    setIsImpulse(
+      transaction.type === 'expense'
+        ? transaction.isImpulse || transaction.planningType === 'impulse'
+        : false
+    );
+    setPlanningType(
+      transaction.type === 'expense'
+        ? transaction.isImpulse
+          ? 'impulse'
+          : transaction.planningType ?? 'unknown'
+        : 'unknown'
+    );
     setStatus(null);
   }, [transaction, visible]);
 
@@ -111,7 +131,11 @@ export function CompleteLazyEntryModal({
         photoUrl: photoUrl || null,
         locationName: locationName || null,
         isImpulse: transaction.type === 'expense' ? isImpulse : false,
+        planningType: transaction.type === 'expense' ? planningType : 'unknown',
         isLazyEntry: false,
+        isIncomplete: false,
+        needsReview: false,
+        reviewReason: null,
         transactionAt: combineDateAndTime(transactionDate, transactionTime),
       });
       onCompleted();
@@ -176,14 +200,25 @@ export function CompleteLazyEntryModal({
         </ScrollView>
 
         {transaction?.type === 'expense' ? (
-          <Pressable
-            onPress={() => setIsImpulse((current) => !current)}
-            style={[styles.flagRow, isImpulse && styles.flagRowActive]}
-          >
-            <Text style={[styles.flagText, isImpulse && styles.flagTextActive]}>
-              Mark as impulse spend
-            </Text>
-          </Pressable>
+          <>
+            <Text style={styles.label}>Planning type</Text>
+            <View style={styles.chipRow}>
+              {expensePlanningOptions.map((option) => (
+                <Pressable
+                  key={option.value}
+                  onPress={() => {
+                    setPlanningType(option.value);
+                    setIsImpulse(option.value === 'impulse');
+                  }}
+                  style={[styles.chip, planningType === option.value && styles.chipActive]}
+                >
+                  <Text style={[styles.chipLabel, planningType === option.value && styles.chipLabelActive]}>
+                    {option.label}
+                  </Text>
+                </Pressable>
+              ))}
+            </View>
+          </>
         ) : null}
 
         <TextInput

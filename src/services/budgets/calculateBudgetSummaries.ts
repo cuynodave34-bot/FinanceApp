@@ -25,7 +25,8 @@ export function calculateBudgetSummaries({
   transactions,
   today = toDateKey(new Date()),
 }: BudgetSummaryInput) {
-  const budgetMap = new Map(budgets.map((budget) => [budget.budgetDate, budget]));
+  const activeBudgets = budgets.filter((budget) => !budget.deletedAt);
+  const budgetMap = new Map(activeBudgets.map((budget) => [budget.budgetDate, budget]));
   const expenseTotals = new Map<string, number>();
 
   for (const transaction of transactions) {
@@ -42,7 +43,7 @@ export function calculateBudgetSummaries({
 
   const dates = new Set<string>([today]);
 
-  for (const budget of budgets) {
+  for (const budget of activeBudgets) {
     dates.add(budget.budgetDate);
   }
 

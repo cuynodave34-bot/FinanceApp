@@ -70,8 +70,8 @@ function RootNavigator() {
   return (
     <>
       <StatusBar hidden animated />
-      {session ? (
-        <AppPreferencesProvider userId={session.user.id}>
+      <AppPreferencesProvider userId={session?.user.id ?? 'signed-out'}>
+        {session ? (
           <SyncProvider>
             <ReminderScheduleBootstrap userId={session.user.id} />
             <AppLockGate>
@@ -80,12 +80,12 @@ function RootNavigator() {
               </Stack>
             </AppLockGate>
           </SyncProvider>
-        </AppPreferencesProvider>
-      ) : (
-        <Stack screenOptions={{ headerShown: false }}>
-          <Stack.Screen name="(auth)" />
-        </Stack>
-      )}
+        ) : (
+          <Stack screenOptions={{ headerShown: false }}>
+            <Stack.Screen name="(auth)" />
+          </Stack>
+        )}
+      </AppPreferencesProvider>
     </>
   );
 }

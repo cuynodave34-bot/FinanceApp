@@ -3,6 +3,7 @@ import { defaultCategorySeeds } from '@/shared/constants/default-categories';
 import { Category, CategoryType } from '@/shared/types/domain';
 import { createId } from '@/shared/utils/id';
 import { nowIso } from '@/shared/utils/time';
+import { normalizeRequiredTextInput } from '@/shared/validation/text';
 import { buildSyncQueueItem } from '@/sync/queue/factory';
 import { enqueueSyncItem } from '@/sync/queue/repository';
 
@@ -36,6 +37,16 @@ type UpdateCategoryInput = {
 
 function mapCategory(row: CategoryRow): Category {
   return row;
+}
+
+const allowedCategoryTypes: CategoryType[] = ['income', 'expense', 'both'];
+
+function normalizeCategoryType(type: CategoryType) {
+  if (!allowedCategoryTypes.includes(type)) {
+    throw new Error('Invalid category type.');
+  }
+
+  return type;
 }
 
 async function insertCategory(category: Category, shouldQueue: boolean) {
@@ -108,8 +119,8 @@ export async function createCategory(input: CreateCategoryInput) {
   const category: Category = {
     id: createId(),
     userId: input.userId,
-    name: input.name.trim(),
-    type: input.type,
+    name: normalizeRequiredTextInput(input.name, { fieldName: 'Category name', maxLength: 80 }),
+    type: normalizeCategoryType(input.type),
     parentCategoryId: input.parentCategoryId ?? null,
     icon: null,
     color: null,
@@ -134,8 +145,8 @@ export async function updateCategory(input: UpdateCategoryInput) {
         updated_at = ?
     where id = ? and user_id = ?`,
     [
-      input.name.trim(),
-      input.type,
+      normalizeRequiredTextInput(input.name, { fieldName: 'Category name', maxLength: 80 }),
+      normalizeCategoryType(input.type),
       input.parentCategoryId ?? null,
       updatedAt,
       input.id,

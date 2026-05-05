@@ -26,7 +26,7 @@ describe('exportTransactionsToCsv', () => {
     const csv = exportTransactionsToCsv([]);
     const lines = csv.split('\n');
     expect(lines[0]).toBe(
-      'ID,Type,Amount,Account,To Account,Category,Notes,Location,Photo URL,Date,Lazy Entry,Impulse'
+      'Date,Type,Amount,Transfer Fee,Receiver Amount,Source,Destination,Category,Notes,Location,Photo URL,Needs Review,Review Reason,Lazy Entry,Impulse'
     );
   });
 
@@ -35,7 +35,7 @@ describe('exportTransactionsToCsv', () => {
       makeTx({ type: 'expense', amount: 50, notes: 'Lunch' }),
     ]);
     const lines = csv.split('\n');
-    expect(lines[1]).toBe('t1,expense,50,Cash,,Food,Lunch,,,2026-04-25T12:00:00.000Z,No,No');
+    expect(lines[1]).toBe('2026-04-25T12:00:00.000Z,expense,50.00,0.00,,Cash,,Food,Lunch,,,No,,No,No');
   });
 
   it('escapes commas inside fields', () => {
@@ -50,6 +50,13 @@ describe('exportTransactionsToCsv', () => {
       makeTx({ type: 'expense', amount: 200, notes: 'He said "wow"' }),
     ]);
     expect(csv).toContain('"He said ""wow"""');
+  });
+
+  it('neutralizes spreadsheet formula injection in text fields', () => {
+    const csv = exportTransactionsToCsv([
+      makeTx({ type: 'expense', amount: 200, notes: '=IMPORTDATA("https://example.com")' }),
+    ]);
+    expect(csv).toContain('"\'=IMPORTDATA(""https://example.com"")"');
   });
 
   it('marks lazy and impulse correctly', () => {

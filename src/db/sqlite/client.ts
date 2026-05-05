@@ -1,6 +1,12 @@
 import * as SQLite from 'expo-sqlite';
 
-import { runMigrations } from '@/db/sqlite/migrations';
+import {
+  ensurePriorityOneSchema,
+  ensurePriorityFourSchema,
+  ensurePriorityThreeSchema,
+  ensurePriorityTwoSchema,
+  runMigrations,
+} from '@/db/sqlite/migrations';
 
 const database = SQLite.openDatabaseSync('student-finance.db');
 
@@ -20,4 +26,23 @@ export async function initializeDatabase() {
 
 export function getDatabase() {
   return database;
+}
+
+export async function ensurePriorityOneDatabaseSchema() {
+  await ensurePriorityOneSchema((statement) => database.execAsync(statement));
+}
+
+export async function ensurePriorityTwoDatabaseSchema() {
+  await ensurePriorityOneDatabaseSchema();
+  await ensurePriorityTwoSchema((statement) => database.execAsync(statement));
+}
+
+export async function ensurePriorityThreeDatabaseSchema() {
+  await ensurePriorityTwoDatabaseSchema();
+  await ensurePriorityThreeSchema((statement) => database.execAsync(statement));
+}
+
+export async function ensurePriorityFourDatabaseSchema() {
+  await ensurePriorityThreeDatabaseSchema();
+  await ensurePriorityFourSchema((statement) => database.execAsync(statement));
 }

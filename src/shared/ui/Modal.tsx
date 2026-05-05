@@ -9,7 +9,8 @@ import {
   TouchableWithoutFeedback,
 } from 'react-native';
 
-import { colors, radii, spacing } from '@/shared/theme/colors';
+import { useAppPreferences } from '@/features/preferences/provider/AppPreferencesProvider';
+import { colors, getThemeColors, radii, spacing } from '@/shared/theme/colors';
 
 export type AlertButton = {
   text: string;
@@ -36,6 +37,8 @@ export function AppModal({
 }: AppModalProps) {
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const slideAnim = useRef(new Animated.Value(20)).current;
+  const { themeMode } = useAppPreferences();
+  const theme = getThemeColors(themeMode);
 
   useEffect(() => {
     if (visible) {
@@ -65,16 +68,17 @@ export function AppModal({
       statusBarTranslucent
     >
       <TouchableWithoutFeedback onPress={onRequestClose}>
-        <Animated.View style={[styles.overlay, { opacity: fadeAnim }]}>
+        <Animated.View style={[styles.overlay, { backgroundColor: theme.overlay, opacity: fadeAnim }]}>
           <TouchableWithoutFeedback>
             <Animated.View
               style={[
                 styles.container,
+                { backgroundColor: theme.surface },
                 { transform: [{ translateY: slideAnim }] },
               ]}
             >
-              <Text style={styles.title}>{title}</Text>
-              {message ? <Text style={styles.message}>{message}</Text> : null}
+              <Text style={[styles.title, { color: theme.ink }]}>{title}</Text>
+              {message ? <Text style={[styles.message, { color: theme.mutedInk }]}>{message}</Text> : null}
               {children}
               <View style={styles.buttonRow}>
                 {buttons.map((button, index) => (
@@ -86,16 +90,18 @@ export function AppModal({
                     }}
                     style={[
                       styles.button,
-                      button.style === 'destructive' && styles.destructiveButton,
-                      button.style === 'cancel' && styles.cancelButton,
+                      { backgroundColor: theme.primary },
+                      button.style === 'destructive' && { backgroundColor: theme.dangerLight },
+                      button.style === 'cancel' && { backgroundColor: theme.surfaceSecondary },
                       buttons.length === 1 && styles.fullWidthButton,
                     ]}
                   >
                     <Text
                       style={[
                         styles.buttonText,
-                        button.style === 'destructive' && styles.destructiveText,
-                        button.style === 'cancel' && styles.cancelText,
+                        { color: theme.surface },
+                        button.style === 'destructive' && { color: theme.danger },
+                        button.style === 'cancel' && { color: theme.ink },
                       ]}
                     >
                       {button.text}

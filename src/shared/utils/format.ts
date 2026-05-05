@@ -47,5 +47,5 @@ export function formatDateKey(value: string) {
 }
 
 export function maskFinancialValue(value: string, hidden: boolean) {
-  return hidden ? 'Hidden' : value;
+  return hidden ? '[hidden]' : value;
 }

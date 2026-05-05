@@ -1,4 +1,4 @@
-export const colors = {
+export const lightColors = {
   // Core backgrounds
   canvas: '#F5F6FA',
   surface: '#FFFFFF',
@@ -54,6 +54,63 @@ export const colors = {
   overlay: 'rgba(26, 26, 46, 0.5)',
   shadow: 'rgba(26, 26, 46, 0.08)',
 } as const;
+
+export const darkColors = {
+  canvas: '#101114',
+  surface: '#181A20',
+  surfaceElevated: '#20232B',
+  surfaceSecondary: '#232630',
+
+  primary: '#7C6DFF',
+  primaryLight: '#302B63',
+  primaryDark: '#B3AAFF',
+
+  ink: '#F4F5F7',
+  mutedInk: '#9CA3AF',
+  secondaryText: '#C0C5D0',
+
+  border: '#2B2F3A',
+  divider: '#242832',
+
+  success: '#34D399',
+  successLight: '#123A2D',
+  danger: '#F87171',
+  dangerLight: '#3F1D22',
+  warning: '#FBBF24',
+  warningLight: '#3D3013',
+  info: '#60A5FA',
+  infoLight: '#172C4C',
+
+  income: '#34D399',
+  expense: '#F87171',
+  transfer: '#C0C5D0',
+
+  accountCard: {
+    purple: '#302B63',
+    blue: '#172C4C',
+    teal: '#103B37',
+    rose: '#43232A',
+    amber: '#3D3013',
+    slate: '#29313F',
+  },
+
+  tabBarBg: '#181A20',
+  tabBarBorder: '#2B2F3A',
+  tabBarActive: '#B3AAFF',
+  tabBarInactive: '#9CA3AF',
+
+  overlay: 'rgba(0, 0, 0, 0.62)',
+  shadow: 'rgba(0, 0, 0, 0.28)',
+} as const;
+
+export type AppThemeMode = 'light' | 'dark';
+export type CardTint = keyof typeof lightColors.accountCard;
+
+export const colors = lightColors;
+
+export function getThemeColors(themeMode: AppThemeMode) {
+  return themeMode === 'dark' ? darkColors : lightColors;
+}
 
 export const shadows = {
   small: {

@@ -2,7 +2,8 @@ import { useState } from 'react';
 import { Pressable, StyleSheet, Text, View, Platform } from 'react-native';
 import DateTimePicker from '@react-native-community/datetimepicker';
 
-import { colors, spacing, radii } from '@/shared/theme/colors';
+import { useAppPreferences } from '@/features/preferences/provider/AppPreferencesProvider';
+import { colors, getThemeColors, spacing, radii } from '@/shared/theme/colors';
 import { toDateKey, toTimeKey, dateKeyToDate, timeKeyToDate } from '@/shared/utils/time';
 
 interface DatePickerFieldProps {
@@ -14,14 +15,16 @@ interface DatePickerFieldProps {
 
 export function DatePickerField({ value, onChange, placeholder, style }: DatePickerFieldProps) {
   const [show, setShow] = useState(false);
+  const { themeMode } = useAppPreferences();
+  const theme = getThemeColors(themeMode);
 
   const displayValue = value || placeholder || 'Select date';
   const pickerValue = value && value.length === 10 ? dateKeyToDate(value) : new Date();
 
   return (
     <View style={style}>
-      <Pressable onPress={() => setShow(true)} style={styles.field}>
-        <Text style={[styles.fieldText, !value && styles.placeholderText]}>{displayValue}</Text>
+      <Pressable onPress={() => setShow(true)} style={[styles.field, { backgroundColor: theme.surfaceSecondary, borderColor: theme.border }]}>
+        <Text style={[styles.fieldText, { color: value ? theme.ink : theme.mutedInk }]}>{displayValue}</Text>
       </Pressable>
       {show && (
         <>
@@ -40,7 +43,7 @@ export function DatePickerField({ value, onChange, placeholder, style }: DatePic
           />
           {Platform.OS === 'ios' && (
             <Pressable onPress={() => setShow(false)} style={styles.doneButton}>
-              <Text style={styles.doneText}>Done</Text>
+              <Text style={[styles.doneText, { color: theme.primary }]}>Done</Text>
             </Pressable>
           )}
         </>
@@ -51,6 +54,8 @@ export function DatePickerField({ value, onChange, placeholder, style }: DatePic
 
 export function TimePickerField({ value, onChange, placeholder, style }: DatePickerFieldProps) {
   const [show, setShow] = useState(false);
+  const { themeMode } = useAppPreferences();
+  const theme = getThemeColors(themeMode);
 
   const displayValue = value || placeholder || 'Select time';
   const pickerValue =
@@ -58,8 +63,8 @@ export function TimePickerField({ value, onChange, placeholder, style }: DatePic
 
   return (
     <View style={style}>
-      <Pressable onPress={() => setShow(true)} style={styles.field}>
-        <Text style={[styles.fieldText, !value && styles.placeholderText]}>{displayValue}</Text>
+      <Pressable onPress={() => setShow(true)} style={[styles.field, { backgroundColor: theme.surfaceSecondary, borderColor: theme.border }]}>
+        <Text style={[styles.fieldText, { color: value ? theme.ink : theme.mutedInk }]}>{displayValue}</Text>
       </Pressable>
       {show && (
         <>
@@ -79,7 +84,7 @@ export function TimePickerField({ value, onChange, placeholder, style }: DatePic
           />
           {Platform.OS === 'ios' && (
             <Pressable onPress={() => setShow(false)} style={styles.doneButton}>
-              <Text style={styles.doneText}>Done</Text>
+              <Text style={[styles.doneText, { color: theme.primary }]}>Done</Text>
             </Pressable>
           )}
         </>

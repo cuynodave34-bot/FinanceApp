@@ -1,5 +1,5 @@
 import { useFocusEffect, useRouter } from 'expo-router';
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 
@@ -7,13 +7,15 @@ import { listAccountsByUser } from '@/db/repositories/accountsRepository';
 import { listCategoriesByUser } from '@/db/repositories/categoriesRepository';
 import {
   deleteTransaction,
+  undoLatestTransactionAction,
   listTransactionsByUser,
   TransactionFeedItem,
 } from '@/db/repositories/transactionsRepository';
+import { getLatestUndoableAction } from '@/db/repositories/activityLogRepository';
 import { ConfirmModal } from '@/shared/ui/Modal';
 import { useAuth } from '@/features/auth/provider/AuthProvider';
 import { useAppPreferences } from '@/features/preferences/provider/AppPreferencesProvider';
-import { colors, spacing, radii, shadows } from '@/shared/theme/colors';
+import { colors, getThemeColors, spacing, radii, shadows } from '@/shared/theme/colors';
 import { Account, Category } from '@/shared/types/domain';
 import { formatAccountLabel, formatTransactionAccountLabel } from '@/shared/utils/accountLabels';
 import {
@@ -23,11 +25,13 @@ import {
   maskFinancialValue,
 } from '@/shared/utils/format';
 import { DatePickerField } from '@/shared/ui/DateTimePickerField';
-import { isDateKey, toDateKey } from '@/shared/utils/time';
+import { addDays, isDateKey, toDateKey } from '@/shared/utils/time';
+import { getTransferFee } from '@/shared/utils/transactionAmounts';
 import { CompleteLazyEntryModal } from '../components/CompleteLazyEntryModal';
 
 const ledgerTypeFilters = ['all', 'expense', 'income', 'transfer'] as const;
 const entryStateFilters = ['all', 'complete', 'incomplete'] as const;
+const PAGE_SIZE = 10;
 
 type LedgerTypeFilter = (typeof ledgerTypeFilters)[number];
 type EntryStateFilter = (typeof entryStateFilters)[number];
@@ -57,7 +61,8 @@ const emptyFilters: TransactionFilters = {
 export function TransactionsScreen() {
   const { user } = useAuth();
   const router = useRouter();
-  const { balancesHidden, toggleBalancesHidden } = useAppPreferences();
+  const { balancesHidden, themeMode, toggleBalancesHidden } = useAppPreferences();
+  const theme = getThemeColors(themeMode);
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
   const [transactions, setTransactions] = useState<TransactionFeedItem[]>([]);
@@ -65,7 +70,9 @@ export function TransactionsScreen() {
   const [showFilters, setShowFilters] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
   const [isEditMode, setIsEditMode] = useState(false);
+  const [currentPage, setCurrentPage] = useState(1);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [canUndo, setCanUndo] = useState(false);
   const [deleteConfirm, setDeleteConfirm] = useState<{ visible: boolean; id: string | null }>({
     visible: false,
     id: null,
@@ -83,6 +90,7 @@ export function TransactionsScreen() {
     setAccounts(accountRows.filter((account) => !account.isArchived));
     setCategories(categoryRows);
     setTransactions(transactionRows);
+    setCanUndo(Boolean(await getLatestUndoableAction(user.id)));
   }, [user]);
 
   useFocusEffect(
@@ -93,12 +101,31 @@ export function TransactionsScreen() {
     }, [refresh])
   );
 
+  const sevenDayStart = addDays(toDateKey(new Date()), -6);
   const filteredTransactions = useMemo(
-    () => transactions.filter((transaction) => matchesTransactionFilters(transaction, filters)),
-    [transactions, filters]
+    () =>
+      transactions.filter(
+        (transaction) =>
+          isWithinRecentWindow(transaction, sevenDayStart) &&
+          matchesTransactionFilters(transaction, filters)
+      ),
+    [transactions, filters, sevenDayStart]
+  );
+  const totalPages = Math.max(1, Math.ceil(filteredTransactions.length / PAGE_SIZE));
+  const pagedTransactions = filteredTransactions.slice(
+    (currentPage - 1) * PAGE_SIZE,
+    currentPage * PAGE_SIZE
   );
   const hasActiveFilters = checkHasActiveFilters(filters);
   const activeFilterCount = getActiveFilterCount(filters);
+
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [filters, transactions.length]);
+
+  useEffect(() => {
+    setCurrentPage((page) => Math.min(page, totalPages));
+  }, [totalPages]);
 
   const exitEditMode = useCallback(() => {
     setIsEditMode(false);
@@ -111,6 +138,7 @@ export function TransactionsScreen() {
       try {
         await deleteTransaction(user.id, id);
         setDeleteConfirm({ visible: false, id: null });
+        setStatus('Transaction moved to trash.');
         await refresh();
       } catch (error) {
         setStatus(error instanceof Error ? error.message : 'Failed to delete transaction.');
@@ -125,24 +153,47 @@ export function TransactionsScreen() {
       const ids = Array.from(selectedIds);
       await Promise.all(ids.map((id) => deleteTransaction(user.id, id)));
       exitEditMode();
+      setStatus(`${ids.length} transaction${ids.length === 1 ? '' : 's'} moved to trash.`);
       await refresh();
     } catch (error) {
       setStatus(error instanceof Error ? error.message : 'Failed to delete transactions.');
     }
   }, [user, selectedIds, exitEditMode, refresh]);
 
+  const handleUndo = useCallback(async () => {
+    if (!user) return;
+    try {
+      await undoLatestTransactionAction(user.id);
+      setStatus('Recent transaction action undone.');
+      await refresh();
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : 'Failed to undo recent action.');
+      setCanUndo(false);
+    }
+  }, [user, refresh]);
+
   return (
-    <View style={styles.screen}>
+    <View style={[styles.screen, { backgroundColor: theme.canvas }]}>
       <ScrollView
         style={styles.scroll}
         contentContainerStyle={styles.content}
         showsVerticalScrollIndicator={false}
       >
         <View style={styles.headerRow}>
-          <Text style={styles.pageTitle}>Transaction Logs</Text>
+          <Text style={[styles.pageTitle, { color: theme.ink }]}>Transaction Logs</Text>
           <View style={styles.headerActions}>
-            <Pressable onPress={() => toggleBalancesHidden()} style={styles.iconButton}>
-              <Ionicons name={balancesHidden ? 'eye-off-outline' : 'eye-outline'} size={20} color={colors.ink} />
+            <Pressable onPress={() => toggleBalancesHidden()} style={[styles.iconButton, { backgroundColor: theme.surface, borderColor: theme.border }]}>
+              <Ionicons name={balancesHidden ? 'eye-off-outline' : 'eye-outline'} size={17} color={theme.ink} />
+            </Pressable>
+            <Pressable
+              onPress={handleUndo}
+              disabled={!canUndo}
+              style={[styles.iconButton, { backgroundColor: theme.surface, borderColor: theme.border }, canUndo && { borderColor: theme.primary }, !canUndo && styles.iconButtonDisabled]}
+            >
+              <Ionicons name="arrow-undo-outline" size={17} color={canUndo ? theme.primary : theme.mutedInk} />
+            </Pressable>
+            <Pressable onPress={() => router.push('/trash' as any)} style={[styles.iconButton, { backgroundColor: theme.surface, borderColor: theme.border }]}>
+              <Ionicons name="trash-outline" size={17} color={theme.ink} />
             </Pressable>
             <Pressable
               onPress={() => {
@@ -152,28 +203,28 @@ export function TransactionsScreen() {
                   setIsEditMode(true);
                 }
               }}
-              style={[styles.iconButton, isEditMode && styles.iconButtonActive]}
+              style={[styles.iconButton, { backgroundColor: theme.surface, borderColor: theme.border }, isEditMode && { borderColor: theme.primary }]}
             >
-              <Ionicons name={isEditMode ? 'close-outline' : 'create-outline'} size={20} color={colors.ink} />
+              <Ionicons name={isEditMode ? 'close-outline' : 'create-outline'} size={17} color={theme.ink} />
             </Pressable>
           </View>
         </View>
-        {status ? <Text style={styles.status}>{status}</Text> : null}
+        {status ? <Text style={[styles.status, { color: theme.ink }]}>{status}</Text> : null}
 
-        <View style={[styles.card, shadows.small]}>
+        <View style={[styles.card, shadows.small, { backgroundColor: theme.surface, borderColor: theme.border }]}>
           <View style={styles.searchRow}>
             <TextInput
               value={filters.query}
               onChangeText={(value) => setFilters((current) => ({ ...current, query: value }))}
               placeholder="Search transactions"
-              placeholderTextColor={colors.mutedInk}
-              style={[styles.input, styles.searchInput]}
+              placeholderTextColor={theme.mutedInk}
+              style={[styles.input, styles.searchInput, { backgroundColor: theme.surfaceSecondary, borderColor: theme.border, color: theme.ink }]}
             />
             <Pressable
               onPress={() => setShowFilters((s) => !s)}
-              style={[styles.iconButton, activeFilterCount > 0 && styles.iconButtonActive]}
+              style={[styles.iconButton, { backgroundColor: theme.surfaceSecondary, borderColor: theme.border }, activeFilterCount > 0 && { borderColor: theme.primary }]}
             >
-              <Ionicons name={showFilters ? 'filter' : 'filter-outline'} size={20} color={activeFilterCount > 0 ? colors.primary : colors.ink} />
+              <Ionicons name={showFilters ? 'filter' : 'filter-outline'} size={20} color={activeFilterCount > 0 ? theme.primary : theme.ink} />
               {activeFilterCount > 0 ? (
                 <View style={styles.badge}>
                   <Text style={styles.badgeText}>{activeFilterCount}</Text>
@@ -184,40 +235,40 @@ export function TransactionsScreen() {
 
           {showFilters ? (
             <>
-              <Text style={styles.selectorLabel}>Entry state</Text>
+              <Text style={[styles.selectorLabel, { color: theme.mutedInk }]}>Entry state</Text>
               <View style={styles.chipRow}>
                 {entryStateFilters.map((entryState) => (
                   <Pressable
                     key={entryState}
                     onPress={() => setFilters((current) => ({ ...current, entryState }))}
-                    style={[styles.chip, filters.entryState === entryState && styles.chipActive]}
+                    style={[styles.chip, { backgroundColor: theme.surfaceSecondary, borderColor: theme.border }, filters.entryState === entryState && { backgroundColor: theme.primary, borderColor: theme.primary }]}
                   >
                     <Text
                       style={[
                         styles.chipLabel,
-                        filters.entryState === entryState && styles.chipLabelActive,
+                        { color: filters.entryState === entryState ? theme.surface : theme.ink },
                       ]}
                     >
-                      {capitalize(entryState)}
+                      {formatEntryStateFilter(entryState)}
                     </Text>
                   </Pressable>
                 ))}
               </View>
-              <Text style={styles.selectorLabel}>Type</Text>
+              <Text style={[styles.selectorLabel, { color: theme.mutedInk }]}>Type</Text>
               <View style={styles.chipRow}>
                 {ledgerTypeFilters.map((type) => (
                   <Pressable
                     key={type}
                     onPress={() => setFilters((current) => ({ ...current, type }))}
-                    style={[styles.chip, filters.type === type && styles.chipActive]}
+                    style={[styles.chip, { backgroundColor: theme.surfaceSecondary, borderColor: theme.border }, filters.type === type && { backgroundColor: theme.primary, borderColor: theme.primary }]}
                   >
-                    <Text style={[styles.chipLabel, filters.type === type && styles.chipLabelActive]}>
+                    <Text style={[styles.chipLabel, { color: filters.type === type ? theme.surface : theme.ink }]}>
                       {capitalize(type)}
                     </Text>
                   </Pressable>
                 ))}
               </View>
-              <Text style={styles.selectorLabel}>Date range</Text>
+              <Text style={[styles.selectorLabel, { color: theme.mutedInk }]}>Date range</Text>
               <View style={styles.inputRow}>
                 <DatePickerField
                   value={filters.fromDate}
@@ -233,20 +284,20 @@ export function TransactionsScreen() {
                 />
               </View>
               <View style={styles.inlineActionsRow}>
-                <Text style={styles.helperText}>Leave either side blank to keep the range open.</Text>
+                <Text style={[styles.helperText, { color: theme.mutedInk }]}>Leave either side blank to keep the range open.</Text>
                 {(filters.fromDate || filters.toDate) && (
                   <Pressable onPress={() => setFilters((current) => ({ ...current, fromDate: '', toDate: '' }))}>
-                    <Text style={styles.inlineAction}>Clear dates</Text>
+                    <Text style={[styles.inlineAction, { color: theme.primary }]}>Clear dates</Text>
                   </Pressable>
                 )}
               </View>
-              <Text style={styles.selectorLabel}>Account</Text>
+              <Text style={[styles.selectorLabel, { color: theme.mutedInk }]}>Account</Text>
               <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipRow}>
                 <Pressable
                   onPress={() => setFilters((current) => ({ ...current, accountId: '' }))}
-                  style={[styles.chip, !filters.accountId && styles.chipActive]}
+                  style={[styles.chip, { backgroundColor: theme.surfaceSecondary, borderColor: theme.border }, !filters.accountId && { backgroundColor: theme.primary, borderColor: theme.primary }]}
                 >
-                  <Text style={[styles.chipLabel, !filters.accountId && styles.chipLabelActive]}>
+                  <Text style={[styles.chipLabel, { color: !filters.accountId ? theme.surface : theme.ink }]}>
                     All accounts
                   </Text>
                 </Pressable>
@@ -254,12 +305,12 @@ export function TransactionsScreen() {
                   <Pressable
                     key={account.id}
                     onPress={() => setFilters((current) => ({ ...current, accountId: account.id }))}
-                    style={[styles.chip, filters.accountId === account.id && styles.chipActive]}
+                    style={[styles.chip, { backgroundColor: theme.surfaceSecondary, borderColor: theme.border }, filters.accountId === account.id && { backgroundColor: theme.primary, borderColor: theme.primary }]}
                   >
                     <Text
                       style={[
                         styles.chipLabel,
-                        filters.accountId === account.id && styles.chipLabelActive,
+                        { color: filters.accountId === account.id ? theme.surface : theme.ink },
                       ]}
                     >
                       {formatAccountLabel(account)}
@@ -267,13 +318,13 @@ export function TransactionsScreen() {
                   </Pressable>
                 ))}
               </ScrollView>
-              <Text style={styles.selectorLabel}>Category</Text>
+              <Text style={[styles.selectorLabel, { color: theme.mutedInk }]}>Category</Text>
               <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipRow}>
                 <Pressable
                   onPress={() => setFilters((current) => ({ ...current, categoryId: '' }))}
-                  style={[styles.chip, !filters.categoryId && styles.chipActive]}
+                  style={[styles.chip, { backgroundColor: theme.surfaceSecondary, borderColor: theme.border }, !filters.categoryId && { backgroundColor: theme.primary, borderColor: theme.primary }]}
                 >
-                  <Text style={[styles.chipLabel, !filters.categoryId && styles.chipLabelActive]}>
+                  <Text style={[styles.chipLabel, { color: !filters.categoryId ? theme.surface : theme.ink }]}>
                     All categories
                   </Text>
                 </Pressable>
@@ -281,12 +332,12 @@ export function TransactionsScreen() {
                   <Pressable
                     key={category.id}
                     onPress={() => setFilters((current) => ({ ...current, categoryId: category.id }))}
-                    style={[styles.chip, filters.categoryId === category.id && styles.chipActive]}
+                    style={[styles.chip, { backgroundColor: theme.surfaceSecondary, borderColor: theme.border }, filters.categoryId === category.id && { backgroundColor: theme.primary, borderColor: theme.primary }]}
                   >
                     <Text
                       style={[
                         styles.chipLabel,
-                        filters.categoryId === category.id && styles.chipLabelActive,
+                        { color: filters.categoryId === category.id ? theme.surface : theme.ink },
                       ]}
                     >
                       {category.name}
@@ -296,19 +347,19 @@ export function TransactionsScreen() {
               </ScrollView>
               <Pressable
                 onPress={() => setFilters((current) => ({ ...current, impulseOnly: !current.impulseOnly }))}
-                style={[styles.flagRow, filters.impulseOnly && styles.flagRowActive]}
+                style={[styles.flagRow, { backgroundColor: theme.surfaceSecondary, borderColor: theme.border }, filters.impulseOnly && { backgroundColor: theme.warningLight, borderColor: theme.warning }]}
               >
-                <Text style={[styles.flagText, filters.impulseOnly && styles.flagTextActive]}>
+                <Text style={[styles.flagText, { color: filters.impulseOnly ? theme.warning : theme.ink }]}>
                   Show impulse expenses only
                 </Text>
               </Pressable>
               <View style={styles.inlineActionsRow}>
-                <Text style={styles.resultSummary}>
+                <Text style={[styles.resultSummary, { color: theme.mutedInk }]}>
                   {filteredTransactions.length} matching {filteredTransactions.length === 1 ? 'entry' : 'entries'}
                 </Text>
                 {hasActiveFilters ? (
                   <Pressable onPress={() => setFilters(emptyFilters)}>
-                    <Text style={styles.inlineAction}>Clear filters</Text>
+                    <Text style={[styles.inlineAction, { color: theme.primary }]}>Clear filters</Text>
                   </Pressable>
                 ) : null}
               </View>
@@ -316,27 +367,28 @@ export function TransactionsScreen() {
           ) : null}
         </View>
 
-        <View style={[styles.card, shadows.small]}>
+        <View style={[styles.card, shadows.small, { backgroundColor: theme.surface, borderColor: theme.border }]}>
           <View style={styles.logHeaderRow}>
-            <Text style={styles.cardTitle}>Transaction Logs</Text>
-            <Text style={styles.resultSummary}>
+            <Text style={[styles.cardTitle, { color: theme.ink }]}>Transaction Logs</Text>
+            <Text style={[styles.resultSummary, { color: theme.mutedInk }]}>
               {filteredTransactions.length} {filteredTransactions.length === 1 ? 'entry' : 'entries'}
               {isEditMode ? ` | ${selectedIds.size} selected` : ''}
             </Text>
           </View>
+          <Text style={[styles.helperText, { color: theme.mutedInk }]}>Showing transactions from the last 7 days only.</Text>
           {filteredTransactions.length === 0 ? (
-            <Text style={styles.emptyText}>
+            <Text style={[styles.emptyText, { color: theme.mutedInk }]}>
               {hasActiveFilters
                 ? 'No transactions match the current filters.'
                 : 'No transactions recorded yet.'}
             </Text>
           ) : (
-            filteredTransactions.map((transaction) => {
+            pagedTransactions.map((transaction) => {
               const isSelected = selectedIds.has(transaction.id);
               return (
                 <Pressable
                   key={transaction.id}
-                  style={[styles.itemRow, isEditMode && isSelected && styles.itemRowSelected]}
+                  style={[styles.itemRow, { borderBottomColor: theme.border }, isEditMode && isSelected && { backgroundColor: theme.primaryLight }]}
                   onPress={() => {
                     if (isEditMode) {
                       setSelectedIds((prev) => {
@@ -348,8 +400,12 @@ export function TransactionsScreen() {
                         }
                         return next;
                       });
-                    } else if (transaction.isLazyEntry) {
-                      setCompletingTransaction(transaction);
+                    } else if (isTransactionNeedsReview(transaction)) {
+                      if (needsFullTransactionEditor(transaction)) {
+                        router.push(`/add-transaction?editId=${transaction.id}` as any);
+                      } else {
+                        setCompletingTransaction(transaction);
+                      }
                     }
                   }}
                   onLongPress={() => {
@@ -363,29 +419,32 @@ export function TransactionsScreen() {
                       <Ionicons
                         name={isSelected ? 'checkmark-circle' : 'ellipse-outline'}
                         size={22}
-                        color={isSelected ? colors.primary : colors.border}
+                        color={isSelected ? theme.primary : theme.border}
                       />
                     </View>
                   )}
                   <View style={styles.itemCopy}>
                     <View style={styles.titleRow}>
-                      <Text style={styles.itemTitle}>
+                      <Text style={[styles.itemTitle, { color: theme.ink }]}>
                         {transaction.notes?.trim() || defaultTransactionTitle(transaction)}
                       </Text>
-                      {transaction.isLazyEntry ? (
+                      {isTransactionNeedsReview(transaction) ? (
                         <View style={styles.incompleteBadge}>
-                          <Text style={styles.incompleteBadgeText}>Incomplete</Text>
+                          <Text style={styles.incompleteBadgeText}>Needs Review</Text>
                         </View>
                       ) : null}
                     </View>
-                    <Text style={styles.itemMeta}>{buildTransactionMeta(transaction)}</Text>
-                    <Text style={styles.itemMeta}>{formatTransactionDate(transaction.transactionAt)}</Text>
+                    <Text style={[styles.itemMeta, { color: theme.mutedInk }]}>{buildTransactionMeta(transaction)}</Text>
+                    {isTransactionNeedsReview(transaction) && transaction.reviewReason ? (
+                      <Text style={styles.reviewReason}>{transaction.reviewReason}</Text>
+                    ) : null}
+                    <Text style={[styles.itemMeta, { color: theme.mutedInk }]}>{formatTransactionDate(transaction.transactionAt)}</Text>
                   </View>
                   <View style={styles.itemActionGroup}>
-                    <Text style={styles.itemAmount}>
+                    <Text style={[styles.itemAmount, { color: theme.ink }]}>
                       {maskFinancialValue(
-                        transaction.isLazyEntry
-                          ? formatMoney(transaction.amount)
+                          isTransactionNeedsReview(transaction)
+                            ? formatMoney(transaction.amount)
                           : formatTransactionAmount(transaction),
                         balancesHidden
                       )}
@@ -393,13 +452,15 @@ export function TransactionsScreen() {
                     {!isEditMode && (
                       <Pressable
                         onPress={() =>
-                          transaction.isLazyEntry
-                            ? setCompletingTransaction(transaction)
-                            : router.push(`/add-transaction?editId=${transaction.id}`)
+                          isTransactionNeedsReview(transaction)
+                            ? needsFullTransactionEditor(transaction)
+                              ? router.push(`/add-transaction?editId=${transaction.id}` as any)
+                              : setCompletingTransaction(transaction)
+                            : router.push(`/add-transaction?editId=${transaction.id}` as any)
                         }
                       >
-                        <Text style={styles.inlineAction}>
-                          {transaction.isLazyEntry ? 'Complete' : 'Edit'}
+                        <Text style={[styles.inlineAction, { color: theme.primary }]}>
+                          {isTransactionNeedsReview(transaction) ? 'Review' : 'Edit'}
                         </Text>
                       </Pressable>
                     )}
@@ -408,6 +469,27 @@ export function TransactionsScreen() {
               );
             })
           )}
+          {filteredTransactions.length > PAGE_SIZE ? (
+            <View style={styles.paginationRow}>
+              <Pressable
+                onPress={() => setCurrentPage((page) => Math.max(1, page - 1))}
+                disabled={currentPage === 1}
+                style={[styles.pageButton, { backgroundColor: theme.surfaceSecondary, borderColor: theme.border }, currentPage === 1 && styles.pageButtonDisabled]}
+              >
+                <Ionicons name="chevron-back" size={16} color={currentPage === 1 ? theme.mutedInk : theme.primary} />
+                <Text style={[styles.pageButtonLabel, { color: currentPage === 1 ? theme.mutedInk : theme.primary }]}>Prev</Text>
+              </Pressable>
+              <Text style={[styles.resultSummary, { color: theme.mutedInk }]}>Page {currentPage} of {totalPages}</Text>
+              <Pressable
+                onPress={() => setCurrentPage((page) => Math.min(totalPages, page + 1))}
+                disabled={currentPage === totalPages}
+                style={[styles.pageButton, { backgroundColor: theme.surfaceSecondary, borderColor: theme.border }, currentPage === totalPages && styles.pageButtonDisabled]}
+              >
+                <Text style={[styles.pageButtonLabel, { color: currentPage === totalPages ? theme.mutedInk : theme.primary }]}>Next</Text>
+                <Ionicons name="chevron-forward" size={16} color={currentPage === totalPages ? theme.mutedInk : theme.primary} />
+              </Pressable>
+            </View>
+          ) : null}
         </View>
 
         <ConfirmModal
@@ -454,6 +536,11 @@ function capitalize(value: string) {
   return `${value.slice(0, 1).toUpperCase()}${value.slice(1)}`;
 }
 
+function formatEntryStateFilter(value: EntryStateFilter) {
+  if (value === 'incomplete') return 'Needs Review';
+  return capitalize(value);
+}
+
 function matchesTransactionFilters(
   transaction: TransactionFeedItem,
   filters: TransactionFilters
@@ -484,11 +571,11 @@ function matchesTransactionFilters(
     return false;
   }
 
-  if (filters.entryState === 'complete' && transaction.isLazyEntry) {
+  if (filters.entryState === 'complete' && isTransactionNeedsReview(transaction)) {
     return false;
   }
 
-  if (filters.entryState === 'incomplete' && !transaction.isLazyEntry) {
+  if (filters.entryState === 'incomplete' && !isTransactionNeedsReview(transaction)) {
     return false;
   }
 
@@ -525,6 +612,14 @@ function matchesTransactionFilters(
   return true;
 }
 
+function isWithinRecentWindow(transaction: TransactionFeedItem, startDate: string) {
+  try {
+    return toDateKey(transaction.transactionAt) >= startDate;
+  } catch {
+    return false;
+  }
+}
+
 function checkHasActiveFilters(filters: TransactionFilters) {
   return Boolean(
     filters.query ||
@@ -559,11 +654,31 @@ function defaultTransactionTitle(transaction: TransactionFeedItem) {
   return capitalize(transaction.type);
 }
 
+function isTransactionNeedsReview(transaction: TransactionFeedItem) {
+  return Boolean(transaction.needsReview || transaction.isIncomplete || transaction.isLazyEntry);
+}
+
+function needsFullTransactionEditor(transaction: TransactionFeedItem) {
+  if (transaction.type === 'expense') {
+    return !transaction.accountId && !transaction.fromSavingsGoalId;
+  }
+  if (transaction.type === 'income') {
+    return !transaction.accountId && !transaction.savingsGoalId;
+  }
+  if (transaction.type === 'transfer') {
+    return (!transaction.accountId && !transaction.fromSavingsGoalId) ||
+      (!transaction.toAccountId && !transaction.savingsGoalId);
+  }
+  return false;
+}
+
 function buildTransactionMeta(transaction: TransactionFeedItem) {
   if (transaction.type === 'transfer') {
     const source = transaction.accountName || transaction.fromSavingsGoalName;
     const dest = transaction.toAccountName || transaction.savingsGoalName;
-    return `${formatTransactionAccountLabel(source)} -> ${formatTransactionAccountLabel(dest)}`;
+    const fee = getTransferFee(transaction);
+    const meta = `${formatTransactionAccountLabel(source)} -> ${formatTransactionAccountLabel(dest)}`;
+    return fee > 0 ? `${meta} | Fee ${formatMoney(fee)}` : meta;
   }
 
   if (transaction.isLazyEntry) {
@@ -571,7 +686,20 @@ function buildTransactionMeta(transaction: TransactionFeedItem) {
   }
 
   const sourceOrDest = transaction.accountName || transaction.fromSavingsGoalName || transaction.savingsGoalName;
-  return `${formatTransactionAccountLabel(sourceOrDest)} | ${transaction.categoryName ?? 'Uncategorised'}`;
+  const parts = [
+    formatTransactionAccountLabel(sourceOrDest),
+    transaction.categoryName ?? 'Uncategorised',
+  ];
+
+  if (transaction.type === 'expense' && transaction.planningType && transaction.planningType !== 'unknown') {
+    parts.push(formatPlanningType(transaction.planningType));
+  }
+
+  return parts.join(' | ');
+}
+
+function formatPlanningType(value: string) {
+  return `${value.slice(0, 1).toUpperCase()}${value.slice(1)}`;
 }
 
 function formatTransactionAmount(transaction: TransactionFeedItem) {
@@ -590,11 +718,12 @@ const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: colors.canvas },
   scroll: { flex: 1 },
   content: { paddingHorizontal: spacing.lg, paddingTop: spacing.lg, paddingBottom: 120, gap: spacing.lg },
-  headerRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  pageTitle: { fontSize: 28, fontWeight: '800', color: colors.ink },
-  headerActions: { flexDirection: 'row', gap: 8 },
-  iconButton: { width: 40, height: 40, borderRadius: 20, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border, alignItems: 'center', justifyContent: 'center' },
+  headerRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: spacing.md },
+  pageTitle: { fontSize: 24, fontWeight: '800', color: colors.ink, flex: 1 },
+  headerActions: { flexDirection: 'row', gap: 6 },
+  iconButton: { width: 34, height: 34, borderRadius: 17, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border, alignItems: 'center', justifyContent: 'center' },
   iconButtonActive: { borderColor: colors.primary },
+  iconButtonDisabled: { opacity: 0.45 },
   status: { color: colors.ink, fontSize: 13, lineHeight: 18, fontWeight: '600' },
   card: { backgroundColor: colors.surface, borderRadius: radii.xxl, padding: spacing.lg, gap: spacing.md, borderWidth: 1, borderColor: colors.border },
   logHeaderRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
@@ -616,6 +745,11 @@ const styles = StyleSheet.create({
   flagText: { color: colors.ink, fontWeight: '600' },
   flagTextActive: { color: colors.warning },
   inlineActionsRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: 12 },
+  paginationRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12, paddingTop: spacing.sm },
+  pageButton: { flexDirection: 'row', alignItems: 'center', gap: 4, borderRadius: radii.lg, borderWidth: 1, borderColor: colors.border, paddingHorizontal: 12, paddingVertical: 8, backgroundColor: colors.surfaceSecondary },
+  pageButtonDisabled: { opacity: 0.45 },
+  pageButtonLabel: { color: colors.primary, fontSize: 12, fontWeight: '800' },
+  pageButtonLabelDisabled: { color: colors.mutedInk },
   resultSummary: { color: colors.mutedInk, fontSize: 12, fontWeight: '700' },
   emptyText: { color: colors.mutedInk, fontSize: 14, lineHeight: 20 },
   itemRow: { flexDirection: 'row', justifyContent: 'space-between', gap: 12, paddingVertical: 10, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border, alignItems: 'center' },
@@ -625,6 +759,7 @@ const styles = StyleSheet.create({
   titleRow: { flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' },
   itemTitle: { color: colors.ink, fontSize: 15, fontWeight: '700' },
   itemMeta: { color: colors.mutedInk, fontSize: 12 },
+  reviewReason: { color: colors.warning, fontSize: 12, fontWeight: '600' },
   itemActionGroup: { alignItems: 'flex-end', gap: 8 },
   itemAmount: { color: colors.ink, fontSize: 14, fontWeight: '700', textAlign: 'right' },
   inlineAction: { color: colors.primary, fontSize: 12, fontWeight: '700' },

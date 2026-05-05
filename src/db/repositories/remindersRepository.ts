@@ -2,7 +2,7 @@ import { getDatabase } from '@/db/sqlite/client';
 import { defaultReminderSeeds } from '@/shared/constants/default-reminders';
 import { Reminder, ReminderType } from '@/shared/types/domain';
 import { createId } from '@/shared/utils/id';
-import { nowIso } from '@/shared/utils/time';
+import { isTimeKey, nowIso } from '@/shared/utils/time';
 import { buildSyncQueueItem } from '@/sync/queue/factory';
 import { enqueueSyncItem } from '@/sync/queue/repository';
 
@@ -28,6 +28,14 @@ function mapReminder(row: ReminderRow): Reminder {
     ...row,
     isEnabled: Boolean(row.isEnabled),
   };
+}
+
+function normalizeReminderTime(value: string) {
+  if (!isTimeKey(value)) {
+    throw new Error('Reminder time must use HH:MM in 24-hour format.');
+  }
+
+  return value;
 }
 
 async function insertReminder(reminder: Reminder, shouldQueue: boolean) {
@@ -97,7 +105,7 @@ export async function updateReminder(input: UpdateReminderInput) {
         updated_at = ?
     where id = ? and user_id = ?`,
     [
-      input.reminderTime,
+      normalizeReminderTime(input.reminderTime),
       input.isEnabled ? 1 : 0,
       updatedAt,
       input.id,
@@ -108,6 +116,7 @@ export async function updateReminder(input: UpdateReminderInput) {
   await enqueueSyncItem(
     buildSyncQueueItem(input.userId, 'reminders', input.id, 'update', {
       ...input,
+      reminderTime: normalizeReminderTime(input.reminderTime),
       updatedAt,
     })
   );

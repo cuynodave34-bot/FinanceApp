@@ -10,10 +10,11 @@ import {
   updateAccount,
 } from '@/db/repositories/accountsRepository';
 import { useAuth } from '@/features/auth/provider/AuthProvider';
+import { useAppPreferences } from '@/features/preferences/provider/AppPreferencesProvider';
 import { colors, spacing, radii, shadows } from '@/shared/theme/colors';
 import { Account, AccountType } from '@/shared/types/domain';
 import { formatAccountLabel } from '@/shared/utils/accountLabels';
-import { formatMoney } from '@/shared/utils/format';
+import { formatMoney, maskFinancialValue } from '@/shared/utils/format';
 
 const accountTypes: AccountType[] = ['cash', 'bank', 'e_wallet', 'other'];
 
@@ -61,6 +62,7 @@ function parseCurrencyInput(value: string): number {
 
 export function AccountsScreen() {
   const { user } = useAuth();
+  const { balancesHidden } = useAppPreferences();
   const router = useRouter();
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [status, setStatus] = useState<string | null>(null);
@@ -274,7 +276,8 @@ export function AccountsScreen() {
               <View style={styles.itemCopy}>
                 <Text style={styles.itemTitle}>{formatAccountLabel(account)}</Text>
                 <Text style={styles.itemMeta}>
-                  {account.type} | {account.isSpendable ? 'Spendable' : 'Non-Spendable'} | {formatMoney(account.initialBalance, account.currency)}
+                  {account.type} | {account.isSpendable ? 'Spendable' : 'Non-Spendable'} |{' '}
+                  {maskFinancialValue(formatMoney(account.initialBalance, account.currency), balancesHidden)}
                   {account.isArchived ? ' | archived' : ''}
                 </Text>
               </View>

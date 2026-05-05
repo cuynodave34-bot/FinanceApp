@@ -1,7 +1,8 @@
 import { PropsWithChildren } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 
-import { colors } from '@/shared/theme/colors';
+import { useAppPreferences } from '@/features/preferences/provider/AppPreferencesProvider';
+import { colors, getThemeColors } from '@/shared/theme/colors';
 
 type SectionCardProps = PropsWithChildren<{
   title: string;
@@ -9,10 +10,13 @@ type SectionCardProps = PropsWithChildren<{
 }>;
 
 export function SectionCard({ title, subtitle, children }: SectionCardProps) {
+  const { themeMode } = useAppPreferences();
+  const theme = getThemeColors(themeMode);
+
   return (
-    <View style={styles.card}>
-      <Text style={styles.title}>{title}</Text>
-      <Text style={styles.subtitle}>{subtitle}</Text>
+    <View style={[styles.card, { backgroundColor: theme.surface, borderColor: theme.border }]}>
+      <Text style={[styles.title, { color: theme.ink }]}>{title}</Text>
+      <Text style={[styles.subtitle, { color: theme.mutedInk }]}>{subtitle}</Text>
       <View style={styles.content}>{children}</View>
     </View>
   );

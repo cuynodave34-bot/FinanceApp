@@ -20,11 +20,13 @@ import { listAiChatMemory } from '@/db/repositories/aiChatMemoryRepository';
 
 const SUGGESTED_QUESTIONS = [
   'How much can I spend today?',
+  'Recommend a budget for me',
+  'What impulse spending pattern do you see?',
+  'Can I buy my wishlist items?',
+  'What is in my waiting room?',
   'What is my total balance?',
   'How are my savings goals?',
-  'Spending analysis this week',
   'Am I overspending?',
-  'Budget discipline tips',
 ];
 
 const WELCOME_MESSAGE: ChatMessage = {

@@ -4,10 +4,11 @@ import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 
 import { updateAccount } from '@/db/repositories/accountsRepository';
 import { createBalanceAdjustment } from '@/db/repositories/balanceAdjustmentsRepository';
+import { useAppPreferences } from '@/features/preferences/provider/AppPreferencesProvider';
 import { Account } from '@/shared/types/domain';
-import { colors } from '@/shared/theme/colors';
+import { colors, getThemeColors } from '@/shared/theme/colors';
 import { formatAccountLabel } from '@/shared/utils/accountLabels';
-import { formatMoney } from '@/shared/utils/format';
+import { formatMoney, maskFinancialValue } from '@/shared/utils/format';
 import { toDateKey } from '@/shared/utils/time';
 
 type BalanceConfirmationPromptProps = {
@@ -29,6 +30,8 @@ export function BalanceConfirmationPrompt({
   balances,
   onAdjust,
 }: BalanceConfirmationPromptProps) {
+  const { balancesHidden, themeMode } = useAppPreferences();
+  const theme = getThemeColors(themeMode);
   const [dismissedToday, setDismissedToday] = useState(false);
   const [adjustingAccount, setAdjustingAccount] = useState<Account | null>(null);
   const [adjustValue, setAdjustValue] = useState('');
@@ -116,9 +119,9 @@ export function BalanceConfirmationPrompt({
     const adjustingAccountLabel = formatAccountLabel(adjustingAccount);
 
     return (
-      <View style={styles.card}>
-        <Text style={styles.title}>Adjust {adjustingAccountLabel} balance</Text>
-        <Text style={styles.body}>
+      <View style={[styles.card, { backgroundColor: theme.surface, borderColor: theme.border }]}>
+        <Text style={[styles.title, { color: theme.mutedInk }]}>Adjust {adjustingAccountLabel} balance</Text>
+        <Text style={[styles.body, { color: theme.ink }]}>
           Enter the actual balance you counted. We will update the account without changing
           any transactions.
         </Text>
@@ -127,15 +130,15 @@ export function BalanceConfirmationPrompt({
           onChangeText={setAdjustValue}
           placeholder="Actual balance"
           keyboardType="decimal-pad"
-          style={styles.input}
-          placeholderTextColor={colors.mutedInk}
+          style={[styles.input, { backgroundColor: theme.surfaceSecondary, borderColor: theme.border, color: theme.ink }]}
+          placeholderTextColor={theme.mutedInk}
         />
         <View style={styles.row}>
-          <Pressable onPress={() => setAdjustingAccount(null)} style={styles.secondaryChip}>
-            <Text style={styles.secondaryLabel}>Cancel</Text>
+          <Pressable onPress={() => setAdjustingAccount(null)} style={[styles.secondaryChip, { backgroundColor: theme.surfaceSecondary, borderColor: theme.border }]}>
+            <Text style={[styles.secondaryLabel, { color: theme.ink }]}>Cancel</Text>
           </Pressable>
-          <Pressable onPress={handleAdjustSave} style={styles.primaryChip}>
-            <Text style={styles.primaryLabel}>Save</Text>
+          <Pressable onPress={handleAdjustSave} style={[styles.primaryChip, { backgroundColor: theme.primary }]}>
+            <Text style={[styles.primaryLabel, { color: theme.surface }]}>Save</Text>
           </Pressable>
         </View>
       </View>
@@ -143,28 +146,30 @@ export function BalanceConfirmationPrompt({
   }
 
   return (
-    <View style={styles.card}>
-      <Text style={styles.title}>Balance check</Text>
-      <Text style={styles.body}>
+    <View style={[styles.card, { backgroundColor: theme.surface, borderColor: theme.border }]}>
+      <Text style={[styles.title, { color: theme.mutedInk }]}>Balance check</Text>
+      <Text style={[styles.body, { color: theme.ink }]}>
         Your {formatAccountLabel(promptAccount)} balance says{' '}
-        <Text style={styles.bold}>{formatMoney(currentBalance, promptAccount.currency)}</Text>. Is
+        <Text style={styles.bold}>
+          {maskFinancialValue(formatMoney(currentBalance, promptAccount.currency), balancesHidden)}
+        </Text>. Is
         this still correct?
       </Text>
       <View style={styles.row}>
-        <Pressable onPress={handleConfirm} style={styles.primaryChip}>
-          <Text style={styles.primaryLabel}>Yes, correct</Text>
+        <Pressable onPress={handleConfirm} style={[styles.primaryChip, { backgroundColor: theme.primary }]}>
+          <Text style={[styles.primaryLabel, { color: theme.surface }]}>Yes, correct</Text>
         </Pressable>
         <Pressable
           onPress={() => {
             setAdjustingAccount(promptAccount);
             setAdjustValue(String(currentBalance));
           }}
-          style={styles.secondaryChip}
+          style={[styles.secondaryChip, { backgroundColor: theme.surfaceSecondary, borderColor: theme.border }]}
         >
-          <Text style={styles.secondaryLabel}>No, adjust</Text>
+          <Text style={[styles.secondaryLabel, { color: theme.ink }]}>No, adjust</Text>
         </Pressable>
-        <Pressable onPress={handleRemindLater} style={styles.secondaryChip}>
-          <Text style={styles.secondaryLabel}>Remind later</Text>
+        <Pressable onPress={handleRemindLater} style={[styles.secondaryChip, { backgroundColor: theme.surfaceSecondary, borderColor: theme.border }]}>
+          <Text style={[styles.secondaryLabel, { color: theme.ink }]}>Remind later</Text>
         </Pressable>
       </View>
     </View>

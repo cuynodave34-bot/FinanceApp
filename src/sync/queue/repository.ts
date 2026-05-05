@@ -60,6 +60,7 @@ export async function getPendingSyncItems(userId: string, limit = 50) {
 
 export async function updateSyncItemStatus(
   id: string,
+  userId: string,
   status: SyncQueueItem['status'],
   options?: { lastError?: string | null; incrementAttempt?: boolean }
 ) {
@@ -71,10 +72,10 @@ export async function updateSyncItemStatus(
   await database.runAsync(
     `update sync_queue
      set status = ?, updated_at = ?${hasError ? ', last_error = ?' : ''}${attemptClause}
-     where id = ?`,
+     where id = ? and user_id = ?`,
     hasError
-      ? [status, new Date().toISOString(), lastError, id]
-      : [status, new Date().toISOString(), id]
+      ? [status, new Date().toISOString(), lastError, id, userId]
+      : [status, new Date().toISOString(), id, userId]
   );
 }
 
@@ -95,12 +96,12 @@ export async function deleteSyncedItemsOlderThan(cutoffIso: string) {
   );
 }
 
-export async function resetFailedSyncItemAttempts() {
+export async function resetFailedSyncItemAttempts(userId: string) {
   const database = getDatabase();
   await database.runAsync(
     `update sync_queue
      set attempt_count = 0, status = 'pending', last_error = null, updated_at = ?
-     where status = 'failed'`,
-    [new Date().toISOString()]
+     where user_id = ? and status = 'failed'`,
+    [new Date().toISOString(), userId]
   );
 }

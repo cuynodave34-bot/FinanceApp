@@ -1,6 +1,7 @@
 import { StyleSheet, Text, View } from 'react-native';
 
-import { colors, spacing, radii } from '@/shared/theme/colors';
+import { useAppPreferences } from '@/features/preferences/provider/AppPreferencesProvider';
+import { colors, getThemeColors, spacing, radii } from '@/shared/theme/colors';
 
 type StatCardProps = {
   label: string;
@@ -18,7 +19,16 @@ const accentMap = {
 };
 
 export function StatCard({ label, value, accent, hidden }: StatCardProps) {
-  const { bg, text } = accentMap[accent];
+  const { themeMode } = useAppPreferences();
+  const theme = getThemeColors(themeMode);
+  const themedAccentMap = {
+    success: { bg: theme.successLight, text: theme.success },
+    warning: { bg: theme.warningLight, text: theme.warning },
+    danger: { bg: theme.dangerLight, text: theme.danger },
+    info: { bg: theme.infoLight, text: theme.info },
+    primary: { bg: theme.primaryLight, text: theme.primary },
+  };
+  const { bg, text } = themedAccentMap[accent];
   return (
     <View style={[styles.card, { backgroundColor: bg }]}>
       <Text style={[styles.label, { color: text }]}>{label}</Text>

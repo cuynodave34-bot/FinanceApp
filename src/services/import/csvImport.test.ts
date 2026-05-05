@@ -48,6 +48,34 @@ describe('importTransactionsFromCsv', () => {
     expect(result.errors[0]).toContain('No data rows');
   });
 
+  it('rejects unexpected CSV headers', async () => {
+    const result = await importTransactionsFromCsv(
+      'u1',
+      'Type,Amount,Account\nexpense,100,Cash'
+    );
+    expect(result.imported).toBe(0);
+    expect(result.errors[0]).toContain('CSV header does not match');
+  });
+
+  it('rejects extra CSV header columns', async () => {
+    const csv =
+      'ID,Type,Amount,Account,To Account,Category,Notes,Location,Photo URL,Date,Lazy Entry,Impulse,Extra\n' +
+      't1,expense,100,Cash,,Food,Lunch,,,2026-04-25,No,No,ignored';
+    const result = await importTransactionsFromCsv('u1', csv);
+    expect(result.imported).toBe(0);
+    expect(result.errors[0]).toContain('CSV header does not match');
+  });
+
+  it('skips rows with oversized text fields', async () => {
+    const csv = makeCsv([
+      ['t1', 'expense', '100', 'Cash', '', 'Food', 'x'.repeat(1001), '', '', '2026-04-25', 'No', 'No'],
+    ]);
+    const result = await importTransactionsFromCsv('u1', csv);
+    expect(result.imported).toBe(0);
+    expect(result.skipped).toBe(1);
+    expect(result.errors[0]).toContain('Notes must be 1000 characters or fewer');
+  });
+
   it('imports a valid expense row', async () => {
     const csv = makeCsv([['t1', 'expense', '100', 'Cash', '', 'Food', 'Lunch', '', '', '2026-04-25', 'No', 'No']]);
     const result = await importTransactionsFromCsv('u1', csv);
@@ -103,7 +131,18 @@ describe('importTransactionsFromCsv', () => {
     const result = await importTransactionsFromCsv('u1', csv);
     expect(result.imported).toBe(0);
     expect(result.skipped).toBe(1);
-    expect(result.errors[0]).toContain('amount must be a positive number');
+    expect(result.errors[0]).toContain('Amount must use a positive decimal number');
+  });
+
+  it('imports quoted notes that contain new lines', async () => {
+    const csv = makeCsv([
+      ['t5b', 'expense', '100', 'Cash', '', 'Food', 'Line one\nLine two', '', '', '2026-04-25', 'No', 'No'],
+    ]);
+    const result = await importTransactionsFromCsv('u1', csv);
+    expect(result.imported).toBe(1);
+    expect(mockCreateTransaction).toHaveBeenCalledWith(
+      expect.objectContaining({ notes: 'Line one\nLine two' })
+    );
   });
 
   it('skips row with zero amount', async () => {
@@ -118,6 +157,15 @@ describe('importTransactionsFromCsv', () => {
     const result = await importTransactionsFromCsv('u1', csv);
     expect(result.imported).toBe(0);
     expect(result.skipped).toBe(1);
+  });
+
+  it('skips row with invalid date', async () => {
+    const csv = makeCsv([['t7b', 'expense', '10', 'Cash', '', '', '', '', '', 'not-a-date', 'No', 'No']]);
+    const result = await importTransactionsFromCsv('u1', csv);
+    expect(result.imported).toBe(0);
+    expect(result.skipped).toBe(1);
+    expect(result.errors[0]).toContain('date is invalid');
+    expect(mockCreateTransaction).not.toHaveBeenCalled();
   });
 
   it('matches accounts and categories case-insensitively', async () => {

@@ -124,6 +124,22 @@ describe('calculateBudgetSummaries', () => {
     expect(result[0].spentAmount).toBe(0);
   });
 
+  it('ignores deleted budgets', () => {
+    const deletedBudget = makeBudget('2026-04-25', 150);
+    deletedBudget.deletedAt = '2026-04-25T13:00:00.000Z';
+    const result = calculateBudgetSummaries({
+      budgets: [deletedBudget],
+      transactions: [],
+      today: '2026-04-25',
+    });
+
+    expect(result[0]).toMatchObject({
+      baseBudget: 0,
+      hasConfiguredBudget: false,
+      remainingAmount: 0,
+    });
+  });
+
   it('ignores income and transfer transactions', () => {
     const income: Transaction = {
       ...makeExpense('2026-04-25', 500),

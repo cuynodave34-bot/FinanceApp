@@ -1,4 +1,3 @@
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import { AppState } from 'react-native';
 import {
   createContext,
@@ -14,6 +13,12 @@ import { getPendingSyncItemCount, resetFailedSyncItemAttempts } from '@/sync/que
 import { runSyncCycle } from '@/sync/engine';
 import { useAuth } from '@/features/auth/provider/AuthProvider';
 import { nowIso } from '@/shared/utils/time';
+import { redactSensitiveText } from '@/shared/utils/redaction';
+import {
+  SyncHistoryEntry,
+  createSyncHistoryEntry,
+  listSyncHistoryByUser,
+} from '@/db/repositories/syncHistoryRepository';
 
 type SyncStatus = 'idle' | 'syncing' | 'online' | 'offline' | 'error';
 
@@ -22,6 +27,7 @@ type SyncContextValue = {
   pendingCount: number;
   lastSyncedAt: string | null;
   lastError: string | null;
+  history: SyncHistoryEntry[];
   triggerSync(): Promise<void>;
 };
 
@@ -30,10 +36,14 @@ const SyncContext = createContext<SyncContextValue>({
   pendingCount: 0,
   lastSyncedAt: null,
   lastError: null,
+  history: [],
   triggerSync: async () => {},
 });
 
-const LAST_ERROR_KEY = 'student-finance:sync:last-error';
+function sanitizeSyncMessage(message: string | null) {
+  if (!message) return null;
+  return redactSensitiveText(message, 240);
+}
 
 export function SyncProvider({ children }: PropsWithChildren) {
   const { user, hasSupabaseConfig } = useAuth();
@@ -41,6 +51,7 @@ export function SyncProvider({ children }: PropsWithChildren) {
   const [pendingCount, setPendingCount] = useState(0);
   const [lastSyncedAt, setLastSyncedAt] = useState<string | null>(null);
   const [lastError, setLastError] = useState<string | null>(null);
+  const [history, setHistory] = useState<SyncHistoryEntry[]>([]);
   const isRunning = useRef(false);
 
   const loadCounts = useCallback(async () => {
@@ -50,9 +61,44 @@ export function SyncProvider({ children }: PropsWithChildren) {
   }, [user]);
 
   const loadLastError = useCallback(async () => {
-    const stored = await AsyncStorage.getItem(LAST_ERROR_KEY);
-    setLastError(stored);
-  }, []);
+    if (!user) return;
+    const latestHistory = await listSyncHistoryByUser(user.id, 1);
+    setLastError(latestHistory[0]?.message ?? null);
+  }, [user]);
+
+  const loadHistory = useCallback(async () => {
+    if (!user) return;
+    setHistory(await listSyncHistoryByUser(user.id));
+  }, [user]);
+
+  const appendHistory = useCallback(
+    async (entry: {
+      syncedAt: string;
+      pushed: number;
+      pulled: number;
+      failed: number;
+      conflictCount: number;
+      pendingCount: number;
+      status: SyncHistoryEntry['status'];
+      message: string | null;
+    }) => {
+      if (!user) return;
+      const nextEntry = await createSyncHistoryEntry({
+        userId: user.id,
+        syncedAt: entry.syncedAt,
+        pushed: entry.pushed,
+        pulled: entry.pulled,
+        failed: entry.failed,
+        conflictCount: entry.conflictCount,
+        pendingCount: entry.pendingCount,
+        status: entry.status,
+        message: sanitizeSyncMessage(entry.message),
+      });
+      const nextHistory = [nextEntry, ...history].slice(0, 20);
+      setHistory(nextHistory);
+    },
+    [history, user]
+  );
 
   const triggerSync = useCallback(async () => {
     if (!user || !hasSupabaseConfig || isRunning.current) return;
@@ -60,15 +106,18 @@ export function SyncProvider({ children }: PropsWithChildren) {
     isRunning.current = true;
     setStatus('syncing');
 
-    await resetFailedSyncItemAttempts();
+    await resetFailedSyncItemAttempts(user.id);
 
     try {
       const result = await runSyncCycle(user.id);
       await loadCounts();
+      const nextPendingCount = await getPendingSyncItemCount(user.id);
+      const syncedAt = result.nextSyncAt ?? nowIso();
+      setPendingCount(nextPendingCount);
 
       const hasFailures = result.failed > 0 || result.conflicts.length > 0;
       setStatus(hasFailures ? 'error' : 'online');
-      setLastSyncedAt(result.nextSyncAt);
+      setLastSyncedAt(syncedAt);
 
       if (hasFailures) {
         const messages: string[] = [];
@@ -80,10 +129,28 @@ export function SyncProvider({ children }: PropsWithChildren) {
           messages.push(`${result.conflicts.length} conflicts kept local version.`);
         const errorText = messages.join(' ');
         setLastError(errorText);
-        await AsyncStorage.setItem(LAST_ERROR_KEY, errorText);
+        await appendHistory({
+          syncedAt,
+          pushed: result.pushed,
+          pulled: result.pulled,
+          failed: result.failed,
+          conflictCount: result.conflicts.length,
+          pendingCount: nextPendingCount,
+          status: 'issue',
+          message: errorText,
+        });
       } else {
         setLastError(null);
-        await AsyncStorage.removeItem(LAST_ERROR_KEY);
+        await appendHistory({
+          syncedAt,
+          pushed: result.pushed,
+          pulled: result.pulled,
+          failed: 0,
+          conflictCount: 0,
+          pendingCount: nextPendingCount,
+          status: 'success',
+          message: null,
+        });
       }
     } catch (error) {
       const message =
@@ -93,17 +160,28 @@ export function SyncProvider({ children }: PropsWithChildren) {
             ? JSON.stringify(error)
             : String(error);
       setStatus('offline');
-      setLastError(message);
-      await AsyncStorage.setItem(LAST_ERROR_KEY, message);
+      const sanitizedMessage = sanitizeSyncMessage(message);
+      setLastError(sanitizedMessage);
+      await appendHistory({
+        syncedAt: nowIso(),
+        pushed: 0,
+        pulled: 0,
+        failed: 0,
+        conflictCount: 0,
+        pendingCount,
+        status: 'offline',
+        message: sanitizedMessage,
+      });
     } finally {
       isRunning.current = false;
     }
-  }, [user, hasSupabaseConfig, loadCounts]);
+  }, [appendHistory, user, hasSupabaseConfig, loadCounts, pendingCount]);
 
   useEffect(() => {
     loadCounts();
     loadLastError();
-  }, [loadCounts, loadLastError]);
+    loadHistory();
+  }, [loadCounts, loadHistory, loadLastError]);
 
   useEffect(() => {
     if (!user || !hasSupabaseConfig) return;
@@ -135,6 +213,7 @@ export function SyncProvider({ children }: PropsWithChildren) {
         pendingCount,
         lastSyncedAt,
         lastError,
+        history,
         triggerSync,
       }}
     >

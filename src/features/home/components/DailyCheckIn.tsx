@@ -3,7 +3,8 @@ import { useRouter } from 'expo-router';
 import { useCallback, useEffect, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
-import { colors } from '@/shared/theme/colors';
+import { useAppPreferences } from '@/features/preferences/provider/AppPreferencesProvider';
+import { colors, getThemeColors } from '@/shared/theme/colors';
 import { toDateKey } from '@/shared/utils/time';
 
 function buildCheckinKey(dateKey: string) {
@@ -12,6 +13,8 @@ function buildCheckinKey(dateKey: string) {
 
 export function DailyCheckIn() {
   const router = useRouter();
+  const { themeMode } = useAppPreferences();
+  const theme = getThemeColors(themeMode);
   const [checkedIn, setCheckedIn] = useState(false);
   const todayKey = toDateKey(new Date());
 
@@ -34,33 +37,33 @@ export function DailyCheckIn() {
   }
 
   return (
-    <View style={styles.card}>
-      <Text style={styles.title}>Daily check-in</Text>
-      <Text style={styles.question}>Did you spend anything today?</Text>
+    <View style={[styles.card, { backgroundColor: theme.surface, borderColor: theme.border }]}>
+      <Text style={[styles.title, { color: theme.mutedInk }]}>Daily check-in</Text>
+      <Text style={[styles.question, { color: theme.ink }]}>Did you spend anything today?</Text>
       <View style={styles.row}>
         <Pressable
           onPress={() => {
             markDone();
             router.push('/transactions');
           }}
-          style={[styles.chip, styles.primaryChip]}
+          style={[styles.chip, { backgroundColor: theme.primary }]}
         >
-          <Text style={styles.primaryLabel}>Yes, add expense</Text>
+          <Text style={[styles.primaryLabel, { color: theme.surface }]}>Yes, add expense</Text>
         </Pressable>
         <Pressable
           onPress={markDone}
-          style={[styles.chip, styles.secondaryChip]}
+          style={[styles.chip, styles.secondaryChip, { backgroundColor: theme.surfaceSecondary, borderColor: theme.border }]}
         >
-          <Text style={styles.secondaryLabel}>No spending</Text>
+          <Text style={[styles.secondaryLabel, { color: theme.ink }]}>No spending</Text>
         </Pressable>
         <Pressable
           onPress={() => {
             markDone();
             router.push('/transactions');
           }}
-          style={[styles.chip, styles.secondaryChip]}
+          style={[styles.chip, styles.secondaryChip, { backgroundColor: theme.surfaceSecondary, borderColor: theme.border }]}
         >
-          <Text style={styles.secondaryLabel}>Add income</Text>
+          <Text style={[styles.secondaryLabel, { color: theme.ink }]}>Add income</Text>
         </Pressable>
       </View>
     </View>

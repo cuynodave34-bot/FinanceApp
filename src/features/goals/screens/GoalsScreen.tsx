@@ -29,10 +29,13 @@ import {
 import { createTransaction } from '@/db/repositories/transactionsRepository';
 import { listAccountsByUser } from '@/db/repositories/accountsRepository';
 import { Savings, InterestPeriod, Debt, Account, DebtType, DebtStatus } from '@/shared/types/domain';
-import { colors, spacing, radii, shadows } from '@/shared/theme/colors';
+import { colors, getThemeColors, spacing, radii, shadows } from '@/shared/theme/colors';
 import { formatAccountLabel } from '@/shared/utils/accountLabels';
 import { formatMoney, maskFinancialValue } from '@/shared/utils/format';
 import { ConfirmModal, InfoModal } from '@/shared/ui/Modal';
+
+const SAVINGS_PAGE_SIZE = 2;
+const DEBT_PAGE_SIZE = 5;
 
 type SavingsDraft = {
   id: string;
@@ -63,12 +66,28 @@ function createEmptySavingsDraft(): SavingsDraft {
 export function GoalsScreen() {
   const { user } = useAuth();
   const router = useRouter();
-  const { balancesHidden, toggleBalancesHidden } = useAppPreferences();
+  const { balancesHidden, themeMode, toggleBalancesHidden } = useAppPreferences();
+  const theme = getThemeColors(themeMode);
+  const themedInput = {
+    backgroundColor: theme.surfaceSecondary,
+    borderColor: theme.border,
+    color: theme.ink,
+  };
+  const themedChip = {
+    backgroundColor: theme.surfaceSecondary,
+    borderColor: theme.border,
+  };
+  const themedChipActive = {
+    backgroundColor: theme.primary,
+    borderColor: theme.primary,
+  };
   const [savingsList, setSavingsList] = useState<Savings[]>([]);
   const [debts, setDebts] = useState<Debt[]>([]);
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [status, setStatus] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<'savings' | 'debts'>('savings');
+  const [savingsPage, setSavingsPage] = useState(1);
+  const [debtPage, setDebtPage] = useState(1);
   const [query, setQuery] = useState('');
   const [confirmModal, setConfirmModal] = useState<{
     visible: boolean;
@@ -291,33 +310,49 @@ export function GoalsScreen() {
   const totalPaid = debts.reduce((sum: number, d: Debt) => sum + d.paidAmount, 0);
 
   const listData = activeTab === 'savings' ? filteredSavings : filteredDebts;
+  const savingsTotalPages = Math.max(1, Math.ceil(filteredSavings.length / SAVINGS_PAGE_SIZE));
+  const debtTotalPages = Math.max(1, Math.ceil(filteredDebts.length / DEBT_PAGE_SIZE));
+  const pagedSavings = filteredSavings.slice(
+    (Math.min(savingsPage, savingsTotalPages) - 1) * SAVINGS_PAGE_SIZE,
+    Math.min(savingsPage, savingsTotalPages) * SAVINGS_PAGE_SIZE
+  );
+  const pagedDebts = filteredDebts.slice(
+    (Math.min(debtPage, debtTotalPages) - 1) * DEBT_PAGE_SIZE,
+    Math.min(debtPage, debtTotalPages) * DEBT_PAGE_SIZE
+  );
+
+  function handleQueryChange(value: string) {
+    setQuery(value);
+    setSavingsPage(1);
+    setDebtPage(1);
+  }
 
   return (
-    <View style={styles.screen}>
+    <View style={[styles.screen, { backgroundColor: theme.canvas }]}>
       <ScrollView style={styles.scroll} contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
         <View style={styles.headerRow}>
-          <Text style={styles.pageTitle}>Savings & Debt</Text>
-          <Pressable onPress={() => toggleBalancesHidden()} style={styles.iconButton}>
-            <Ionicons name={balancesHidden ? 'eye-off-outline' : 'eye-outline'} size={20} color={colors.ink} />
+          <Text style={[styles.pageTitle, { color: theme.ink }]}>Savings & Debt</Text>
+          <Pressable onPress={() => toggleBalancesHidden()} style={[styles.iconButton, { backgroundColor: theme.surface, borderColor: theme.border }]}>
+            <Ionicons name={balancesHidden ? 'eye-off-outline' : 'eye-outline'} size={20} color={theme.ink} />
           </Pressable>
         </View>
-        {status ? <Text style={styles.status}>{status}</Text> : null}
+        {status ? <Text style={[styles.status, { color: theme.mutedInk }]}>{status}</Text> : null}
 
         {/* Tab Switcher */}
         <View style={styles.tabRow}>
-          <Pressable onPress={() => setActiveTab('savings')} style={[styles.tab, activeTab === 'savings' && styles.tabActive]}>
-            <Ionicons name="wallet-outline" size={16} color={activeTab === 'savings' ? colors.surface : colors.mutedInk} />
-            <Text style={[styles.tabLabel, activeTab === 'savings' && styles.tabLabelActive]}>Savings</Text>
+          <Pressable onPress={() => { setActiveTab('savings'); setSavingsPage(1); }} style={[styles.tab, { backgroundColor: theme.surface, borderColor: theme.border }, activeTab === 'savings' && { backgroundColor: theme.primary, borderColor: theme.primary }]}>
+            <Ionicons name="wallet-outline" size={16} color={activeTab === 'savings' ? theme.surface : theme.mutedInk} />
+            <Text style={[styles.tabLabel, { color: activeTab === 'savings' ? theme.surface : theme.mutedInk }]}>Savings</Text>
           </Pressable>
-          <Pressable onPress={() => setActiveTab('debts')} style={[styles.tab, activeTab === 'debts' && styles.tabActive]}>
-            <Ionicons name="card-outline" size={16} color={activeTab === 'debts' ? colors.surface : colors.mutedInk} />
-            <Text style={[styles.tabLabel, activeTab === 'debts' && styles.tabLabelActive]}>Debts</Text>
+          <Pressable onPress={() => { setActiveTab('debts'); setDebtPage(1); }} style={[styles.tab, { backgroundColor: theme.surface, borderColor: theme.border }, activeTab === 'debts' && { backgroundColor: theme.primary, borderColor: theme.primary }]}>
+            <Ionicons name="card-outline" size={16} color={activeTab === 'debts' ? theme.surface : theme.mutedInk} />
+            <Text style={[styles.tabLabel, { color: activeTab === 'debts' ? theme.surface : theme.mutedInk }]}>Debts</Text>
           </Pressable>
         </View>
 
         {/* Summary Card */}
-        <View style={[styles.card, shadows.small]}>
-          <Text style={styles.cardTitle}>Summary</Text>
+        <View style={[styles.card, shadows.small, { backgroundColor: theme.surface, borderColor: theme.border }]}>
+          <Text style={[styles.cardTitle, { color: theme.ink }]}>Summary</Text>
           <View style={styles.summaryRow}>
             {activeTab === 'savings' ? (
               <>
@@ -334,18 +369,18 @@ export function GoalsScreen() {
         </View>
 
         {/* Search */}
-        <View style={[styles.card, shadows.small]}>
+        <View style={[styles.card, shadows.small, { backgroundColor: theme.surface, borderColor: theme.border }]}>
           <View style={styles.searchRow}>
             <TextInput
               value={query}
-              onChangeText={setQuery}
+              onChangeText={handleQueryChange}
               placeholder={`Search ${activeTab}`}
-              placeholderTextColor={colors.mutedInk}
-              style={[styles.input, styles.searchInput]}
+              placeholderTextColor={theme.mutedInk}
+              style={[styles.input, styles.searchInput, themedInput]}
             />
             {query ? (
-              <Pressable onPress={() => setQuery('')} style={styles.iconButton}>
-                <Ionicons name="close-circle" size={20} color={colors.mutedInk} />
+              <Pressable onPress={() => handleQueryChange('')} style={[styles.iconButton, { backgroundColor: theme.surfaceSecondary, borderColor: theme.border }]}>
+                <Ionicons name="close-circle" size={20} color={theme.mutedInk} />
               </Pressable>
             ) : null}
           </View>
@@ -353,8 +388,8 @@ export function GoalsScreen() {
 
         {/* Add/Edit Form */}
         {showForm && (
-          <View style={[styles.card, shadows.small]}>
-            <Text style={styles.cardTitle}>
+          <View style={[styles.card, shadows.small, { backgroundColor: theme.surface, borderColor: theme.border }]}>
+            <Text style={[styles.cardTitle, { color: theme.ink }]}>
               {activeTab === 'savings'
                 ? savingsDraft.id
                   ? 'Edit Savings'
@@ -366,71 +401,71 @@ export function GoalsScreen() {
             {activeTab === 'savings' ? (
               <>
                 <TextInput
-                  style={styles.input}
+                  style={[styles.input, themedInput]}
                   placeholder="Savings account name"
-                  placeholderTextColor={colors.mutedInk}
+                  placeholderTextColor={theme.mutedInk}
                   value={savingsDraft.name}
                   onChangeText={(text) => setSavingsDraft((prev) => ({ ...prev, name: text }))}
                 />
                 <TextInput
-                  style={styles.input}
+                  style={[styles.input, themedInput]}
                   placeholder="Current amount"
-                  placeholderTextColor={colors.mutedInk}
+                  placeholderTextColor={theme.mutedInk}
                   keyboardType="decimal-pad"
                   value={savingsDraft.currentAmount}
                   onChangeText={(text) => setSavingsDraft((prev) => ({ ...prev, currentAmount: text }))}
                 />
-                <Text style={styles.subLabel}>Interest rate per annum (%)</Text>
+                <Text style={[styles.subLabel, { color: theme.mutedInk }]}>Interest rate per annum (%)</Text>
                 <TextInput
-                  style={styles.input}
+                  style={[styles.input, themedInput]}
                   placeholder="e.g. 0.125"
-                  placeholderTextColor={colors.mutedInk}
+                  placeholderTextColor={theme.mutedInk}
                   keyboardType="decimal-pad"
                   value={savingsDraft.interestRate}
                   onChangeText={(text) => setSavingsDraft((prev) => ({ ...prev, interestRate: text }))}
                 />
-                <Text style={styles.subLabel}>Minimum balance to earn interest</Text>
+                <Text style={[styles.subLabel, { color: theme.mutedInk }]}>Minimum balance to earn interest</Text>
                 <TextInput
-                  style={styles.input}
+                  style={[styles.input, themedInput]}
                   placeholder="e.g. 10000"
-                  placeholderTextColor={colors.mutedInk}
+                  placeholderTextColor={theme.mutedInk}
                   keyboardType="decimal-pad"
                   value={savingsDraft.minimumBalanceForInterest}
                   onChangeText={(text) => setSavingsDraft((prev) => ({ ...prev, minimumBalanceForInterest: text }))}
                 />
-                <Text style={styles.subLabel}>Withholding tax rate (%)</Text>
+                <Text style={[styles.subLabel, { color: theme.mutedInk }]}>Withholding tax rate (%)</Text>
                 <TextInput
-                  style={styles.input}
+                  style={[styles.input, themedInput]}
                   placeholder="e.g. 20"
-                  placeholderTextColor={colors.mutedInk}
+                  placeholderTextColor={theme.mutedInk}
                   keyboardType="decimal-pad"
                   value={savingsDraft.withholdingTaxRate}
                   onChangeText={(text) => setSavingsDraft((prev) => ({ ...prev, withholdingTaxRate: text }))}
                 />
-                <Text style={styles.subLabel}>Interest crediting period</Text>
+                <Text style={[styles.subLabel, { color: theme.mutedInk }]}>Interest crediting period</Text>
                 <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.periodChips}>
                   {(['daily', 'weekly', 'monthly', 'quarterly', 'semi_annual', 'annual'] as InterestPeriod[]).map((period) => (
                     <Pressable
                       key={period}
                       onPress={() => setSavingsDraft((prev) => ({ ...prev, interestPeriod: period }))}
-                      style={[styles.chip, savingsDraft.interestPeriod === period && styles.chipActive]}
+                      style={[styles.chip, themedChip, savingsDraft.interestPeriod === period && themedChipActive]}
                     >
-                      <Text style={[styles.chipLabel, savingsDraft.interestPeriod === period && styles.chipLabelActive]}>
+                      <Text style={[styles.chipLabel, { color: savingsDraft.interestPeriod === period ? theme.surface : theme.ink }]}>
                         {period.charAt(0).toUpperCase() + period.slice(1).replace('_', ' ')}
                       </Text>
                     </Pressable>
                   ))}
                 </ScrollView>
-                <Text style={styles.subLabel}>Initial deposit / maintaining ADB</Text>
+                <Text style={[styles.subLabel, { color: theme.mutedInk }]}>Initial deposit / maintaining ADB</Text>
                 <TextInput
-                  style={styles.input}
+                  style={[styles.input, themedInput]}
                   placeholder="e.g. 5000"
-                  placeholderTextColor={colors.mutedInk}
+                  placeholderTextColor={theme.mutedInk}
                   keyboardType="decimal-pad"
                   value={savingsDraft.maintainingBalance}
                   onChangeText={(text) => setSavingsDraft((prev) => ({ ...prev, maintainingBalance: text }))}
                 />
-                <Text style={styles.subLabel}>Spendable</Text>
+                <Text style={[styles.subLabel, { color: theme.mutedInk }]}>Spendable</Text>
                 <View style={styles.chipRow}>
                   {(['spendable', 'non-spendable'] as const).map((option) => {
                     const isSpendable = option === 'spendable';
@@ -439,9 +474,9 @@ export function GoalsScreen() {
                       <Pressable
                         key={option}
                         onPress={() => setSavingsDraft((prev) => ({ ...prev, isSpendable: isSpendable }))}
-                        style={[styles.chip, active && styles.chipActive]}
+                        style={[styles.chip, themedChip, active && themedChipActive]}
                       >
-                        <Text style={[styles.chipLabel, active && styles.chipLabelActive]}>
+                        <Text style={[styles.chipLabel, { color: active ? theme.surface : theme.ink }]}>
                           {isSpendable ? 'Spendable' : 'Non-spendable'}
                         </Text>
                       </Pressable>
@@ -452,38 +487,38 @@ export function GoalsScreen() {
                   <Pressable onPress={handleSaveSavings} style={styles.primaryButton}>
                     <Text style={styles.primaryButtonLabel}>Save</Text>
                   </Pressable>
-                  <Pressable onPress={() => { resetSavingsDraft(); setShowForm(false); }} style={styles.secondaryButton}>
-                    <Text style={styles.secondaryButtonLabel}>Cancel</Text>
+                  <Pressable onPress={() => { resetSavingsDraft(); setShowForm(false); }} style={[styles.secondaryButton, { backgroundColor: theme.surfaceSecondary, borderColor: theme.border }]}>
+                    <Text style={[styles.secondaryButtonLabel, { color: theme.ink }]}>Cancel</Text>
                   </Pressable>
                 </View>
               </>
             ) : (
               <>
-                <Text style={styles.subLabel}>Type</Text>
+                <Text style={[styles.subLabel, { color: theme.mutedInk }]}>Type</Text>
                 <View style={styles.chipRow}>
                   {(['borrowed', 'lent'] as DebtType[]).map((type) => (
                     <Pressable
                       key={type}
                       onPress={() => setDebtDraft((prev) => ({ ...prev, debtType: type }))}
-                      style={[styles.chip, debtDraft.debtType === type && styles.chipActive]}
+                      style={[styles.chip, themedChip, debtDraft.debtType === type && themedChipActive]}
                     >
-                      <Text style={[styles.chipLabel, debtDraft.debtType === type && styles.chipLabelActive]}>
+                      <Text style={[styles.chipLabel, { color: debtDraft.debtType === type ? theme.surface : theme.ink }]}>
                         {type === 'borrowed' ? 'I owe them' : 'They owe me'}
                       </Text>
                     </Pressable>
                   ))}
                 </View>
                 <TextInput
-                  style={styles.input}
+                  style={[styles.input, themedInput]}
                   placeholder="Name (e.g. John, Globe)"
-                  placeholderTextColor={colors.mutedInk}
+                  placeholderTextColor={theme.mutedInk}
                   value={debtDraft.name}
                   onChangeText={(text) => setDebtDraft((prev) => ({ ...prev, name: text }))}
                 />
                 <TextInput
-                  style={styles.input}
+                  style={[styles.input, themedInput]}
                   placeholder="Amount"
-                  placeholderTextColor={colors.mutedInk}
+                  placeholderTextColor={theme.mutedInk}
                   keyboardType="decimal-pad"
                   value={debtDraft.totalAmount}
                   onChangeText={(text) => setDebtDraft((prev) => ({ ...prev, totalAmount: text }))}
@@ -492,12 +527,12 @@ export function GoalsScreen() {
                   value={debtDraft.dueDate}
                   onChange={(value) => setDebtDraft((prev) => ({ ...prev, dueDate: value }))}
                   placeholder="Due date"
-                  style={styles.input}
+                  style={[styles.input, themedInput]}
                 />
                 <TextInput
-                  style={styles.input}
+                  style={[styles.input, themedInput]}
                   placeholder="Notes (optional)"
-                  placeholderTextColor={colors.mutedInk}
+                  placeholderTextColor={theme.mutedInk}
                   value={debtDraft.notes}
                   onChangeText={(text) => setDebtDraft((prev) => ({ ...prev, notes: text }))}
                 />
@@ -505,8 +540,8 @@ export function GoalsScreen() {
                   <Pressable onPress={handleSaveDebt} style={styles.primaryButton}>
                     <Text style={styles.primaryButtonLabel}>Save</Text>
                   </Pressable>
-                  <Pressable onPress={() => { resetDebtDraft(); setShowForm(false); }} style={styles.secondaryButton}>
-                    <Text style={styles.secondaryButtonLabel}>Cancel</Text>
+                  <Pressable onPress={() => { resetDebtDraft(); setShowForm(false); }} style={[styles.secondaryButton, { backgroundColor: theme.surfaceSecondary, borderColor: theme.border }]}>
+                    <Text style={[styles.secondaryButtonLabel, { color: theme.ink }]}>Cancel</Text>
                   </Pressable>
                 </View>
               </>
@@ -518,12 +553,12 @@ export function GoalsScreen() {
         {activeTab === 'savings' ? (
           <>
             {filteredSavings.length === 0 ? (
-              <Text style={styles.emptyText}>
+              <Text style={[styles.emptyText, { color: theme.mutedInk }]}>
                 {query ? 'No savings match the search.' : 'No savings recorded yet.'}
               </Text>
             ) : (
               <View style={styles.savingsList}>
-                {filteredSavings.map((s) => (
+                {pagedSavings.map((s) => (
                   <SavingsCard
                     key={s.id}
                     savings={s}
@@ -532,23 +567,30 @@ export function GoalsScreen() {
                     onLongPress={() => confirmDeleteSavings(s.id)}
                   />
                 ))}
+                <PaginationControls
+                  visible={filteredSavings.length > SAVINGS_PAGE_SIZE}
+                  page={Math.min(savingsPage, savingsTotalPages)}
+                  totalPages={savingsTotalPages}
+                  onPrev={() => setSavingsPage((page) => Math.max(1, page - 1))}
+                  onNext={() => setSavingsPage((page) => Math.min(savingsTotalPages, page + 1))}
+                />
               </View>
             )}
           </>
         ) : (
-          <View style={[styles.card, shadows.small]}>
+          <View style={[styles.card, shadows.small, { backgroundColor: theme.surface, borderColor: theme.border }]}>
             <View style={styles.logHeaderRow}>
-              <Text style={styles.cardTitle}>Your Debts</Text>
-              <Text style={styles.resultSummary}>
+              <Text style={[styles.cardTitle, { color: theme.ink }]}>Your Debts</Text>
+              <Text style={[styles.resultSummary, { color: theme.mutedInk }]}>
                 {listData.length} {listData.length === 1 ? 'entry' : 'entries'}
               </Text>
             </View>
             {filteredDebts.length === 0 ? (
-              <Text style={styles.emptyText}>
+              <Text style={[styles.emptyText, { color: theme.mutedInk }]}>
                 {query ? 'No debts match the search.' : 'No debts recorded yet.'}
               </Text>
             ) : (
-              filteredDebts.map((item) => (
+              pagedDebts.map((item) => (
                 <DebtRow
                   key={item.id}
                   debt={item as Debt}
@@ -559,6 +601,13 @@ export function GoalsScreen() {
                 />
               ))
             )}
+            <PaginationControls
+              visible={filteredDebts.length > DEBT_PAGE_SIZE}
+              page={Math.min(debtPage, debtTotalPages)}
+              totalPages={debtTotalPages}
+              onPrev={() => setDebtPage((page) => Math.max(1, page - 1))}
+              onNext={() => setDebtPage((page) => Math.min(debtTotalPages, page + 1))}
+            />
           </View>
         )}
       </ScrollView>
@@ -580,25 +629,25 @@ export function GoalsScreen() {
 
       {/* Paid Modal */}
       {paidModal.visible && paidModal.debt && (
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalCard}>
-            <Text style={styles.modalTitle}>
+        <View style={[styles.modalOverlay, { backgroundColor: theme.overlay }]}>
+          <View style={[styles.modalCard, { backgroundColor: theme.surface, borderColor: theme.border }]}>
+            <Text style={[styles.modalTitle, { color: theme.ink }]}>
               {paidModal.debt.debtType === 'borrowed' ? 'Pay Debt' : 'Record Payment'}
             </Text>
-            <Text style={styles.modalMessage}>
+            <Text style={[styles.modalMessage, { color: theme.mutedInk }]}>
               {paidModal.debt.debtType === 'borrowed'
                 ? `Pay ${paidModal.debt.name} ${formatMoney(paidModal.debt.totalAmount - paidModal.debt.paidAmount)}`
                 : `${paidModal.debt.name} paid you ${formatMoney(paidModal.debt.totalAmount - paidModal.debt.paidAmount)}`}
             </Text>
-            <Text style={styles.subLabel}>Select account</Text>
+            <Text style={[styles.subLabel, { color: theme.mutedInk }]}>Select account</Text>
             <View style={styles.chipRow}>
               {accounts.map((account) => (
                 <Pressable
                   key={account.id}
                   onPress={() => setPaidModal((m) => ({ ...m, selectedAccountId: account.id }))}
-                  style={[styles.chip, paidModal.selectedAccountId === account.id && styles.chipActive]}
+                  style={[styles.chip, themedChip, paidModal.selectedAccountId === account.id && themedChipActive]}
                 >
-                  <Text style={[styles.chipLabel, paidModal.selectedAccountId === account.id && styles.chipLabelActive]}>
+                  <Text style={[styles.chipLabel, { color: paidModal.selectedAccountId === account.id ? theme.surface : theme.ink }]}>
                     {formatAccountLabel(account)}
                   </Text>
                 </Pressable>
@@ -610,9 +659,9 @@ export function GoalsScreen() {
               </Pressable>
               <Pressable
                 onPress={() => setPaidModal({ visible: false, debt: null, selectedAccountId: '' })}
-                style={styles.secondaryButton}
+                style={[styles.secondaryButton, { backgroundColor: theme.surfaceSecondary, borderColor: theme.border }]}
               >
-                <Text style={styles.secondaryButtonLabel}>Cancel</Text>
+                <Text style={[styles.secondaryButtonLabel, { color: theme.ink }]}>Cancel</Text>
               </Pressable>
             </View>
           </View>
@@ -652,27 +701,29 @@ function SavingsCard({
   onPress: () => void;
   onLongPress: () => void;
 }) {
+  const { themeMode } = useAppPreferences();
+  const theme = getThemeColors(themeMode);
   const earnsInterest =
     savings.interestRate > 0 &&
     savings.currentAmount >= savings.minimumBalanceForInterest;
 
   return (
-    <Pressable onPress={onPress} onLongPress={onLongPress} style={[styles.savingsProductCard, shadows.small]}>
+    <Pressable onPress={onPress} onLongPress={onLongPress} style={[styles.savingsProductCard, shadows.small, { backgroundColor: theme.surface, borderColor: theme.border }]}>
       <View style={styles.savingsProductHeader}>
         <View style={styles.savingsProductCopy}>
-          <Text style={styles.savingsProductName}>{savings.name}</Text>
-          <Text style={styles.savingsProductBalance}>
+          <Text style={[styles.savingsProductName, { color: theme.ink }]}>{savings.name}</Text>
+          <Text style={[styles.savingsProductBalance, { color: theme.ink }]}>
             {maskFinancialValue(formatMoney(savings.currentAmount), balancesHidden)}
           </Text>
         </View>
-        <View style={[styles.savingsStatusBadge, earnsInterest ? styles.savingsStatusActive : styles.savingsStatusInactive]}>
-          <Text style={[styles.savingsStatusText, earnsInterest ? styles.savingsStatusTextActive : styles.savingsStatusTextInactive]}>
+        <View style={[styles.savingsStatusBadge, { backgroundColor: earnsInterest ? theme.successLight : theme.warningLight }]}>
+          <Text style={[styles.savingsStatusText, { color: earnsInterest ? theme.success : theme.warning }]}>
             {earnsInterest ? 'Earning interest' : 'Below threshold'}
           </Text>
         </View>
       </View>
 
-      <View style={styles.savingsDetailTable}>
+      <View style={[styles.savingsDetailTable, { borderTopColor: theme.border }]}>
         <SavingsDetailRow
           label="Interest rate"
           value={savings.interestRate > 0 ? `${formatPercent(savings.interestRate)} per annum` : 'No interest'}
@@ -717,10 +768,12 @@ function SavingsDetailRow({
   value: string;
   hidden?: boolean;
 }) {
+  const { themeMode } = useAppPreferences();
+  const theme = getThemeColors(themeMode);
   return (
-    <View style={styles.savingsDetailRow}>
-      <Text style={styles.savingsDetailLabel}>{label}</Text>
-      <Text style={styles.savingsDetailValue}>{hidden ? 'Hidden' : value}</Text>
+    <View style={[styles.savingsDetailRow, { borderBottomColor: theme.border }]}>
+      <Text style={[styles.savingsDetailLabel, { color: theme.ink }]}>{label}</Text>
+      <Text style={[styles.savingsDetailValue, { color: theme.ink }]}>{hidden ? 'Hidden' : value}</Text>
     </View>
   );
 }
@@ -753,13 +806,15 @@ function SavingsRow({
   onPress: () => void;
   onLongPress: () => void;
 }) {
+  const { themeMode } = useAppPreferences();
+  const theme = getThemeColors(themeMode);
   return (
-    <Pressable onPress={onPress} onLongPress={onLongPress} style={styles.goalRow}>
+    <Pressable onPress={onPress} onLongPress={onLongPress} style={[styles.goalRow, { borderBottomColor: theme.border }]}>
       <View style={styles.goalInfo}>
         <View style={styles.goalHeader}>
-          <Text style={styles.goalName}>{goal.name}</Text>
+          <Text style={[styles.goalName, { color: theme.ink }]}>{goal.name}</Text>
         </View>
-        <Text style={styles.goalMeta}>
+        <Text style={[styles.goalMeta, { color: theme.mutedInk }]}>
           {maskFinancialValue(formatMoney(goal.currentAmount), balancesHidden)}
         </Text>
       </View>
@@ -780,21 +835,23 @@ function DebtRow({
   onLongPress: () => void;
   onPaid: () => void;
 }) {
+  const { themeMode } = useAppPreferences();
+  const theme = getThemeColors(themeMode);
   const remaining = debt.totalAmount - debt.paidAmount;
   const isPaid = debt.status === 'paid' || remaining <= 0;
   return (
-    <Pressable onPress={onPress} onLongPress={onLongPress} style={styles.goalRow}>
+    <Pressable onPress={onPress} onLongPress={onLongPress} style={[styles.goalRow, { borderBottomColor: theme.border }]}>
       <View style={styles.rowContent}>
         <View style={styles.rowMain}>
           <View style={styles.goalHeader}>
-            <Text style={styles.goalName}>{debt.name}</Text>
-            <View style={[styles.badge, isPaid ? styles.badgePaid : debt.debtType === 'borrowed' ? styles.badgeBorrowed : styles.badgeLent]}>
-              <Text style={styles.badgeText}>
+            <Text style={[styles.goalName, { color: theme.ink }]}>{debt.name}</Text>
+            <View style={[styles.badge, { backgroundColor: isPaid ? theme.successLight : debt.debtType === 'borrowed' ? theme.warningLight : theme.infoLight }]}>
+              <Text style={[styles.badgeText, { color: isPaid ? theme.success : debt.debtType === 'borrowed' ? theme.warning : theme.info }]}>
                 {isPaid ? 'Paid' : debt.debtType === 'borrowed' ? 'I Owe' : 'Owes Me'}
               </Text>
             </View>
           </View>
-          <Text style={styles.goalMeta}>
+          <Text style={[styles.goalMeta, { color: theme.mutedInk }]}>
             {isPaid
               ? `Paid ${maskFinancialValue(formatMoney(debt.totalAmount), balancesHidden)}`
               : `${maskFinancialValue(formatMoney(remaining), balancesHidden)} remaining of ${maskFinancialValue(formatMoney(debt.totalAmount), balancesHidden)}`}
@@ -812,16 +869,57 @@ function DebtRow({
 }
 
 function SummaryBox({ label, value, accent }: { label: string; value: string; accent: 'success' | 'danger' | 'info' }) {
+  const { themeMode } = useAppPreferences();
+  const theme = getThemeColors(themeMode);
   const accentColors = {
-    success: { bg: colors.successLight, text: colors.success },
-    danger: { bg: colors.dangerLight, text: colors.danger },
-    info: { bg: colors.infoLight, text: colors.info },
+    success: { bg: theme.successLight, text: theme.success },
+    danger: { bg: theme.dangerLight, text: theme.danger },
+    info: { bg: theme.infoLight, text: theme.info },
   };
   const { bg, text } = accentColors[accent];
   return (
     <View style={[styles.summaryBox, { backgroundColor: bg }]}>
       <Text style={[styles.summaryLabel, { color: text }]}>{label}</Text>
       <Text style={[styles.summaryValue, { color: text }]}>{value}</Text>
+    </View>
+  );
+}
+
+function PaginationControls({
+  visible,
+  page,
+  totalPages,
+  onPrev,
+  onNext,
+}: {
+  visible: boolean;
+  page: number;
+  totalPages: number;
+  onPrev: () => void;
+  onNext: () => void;
+}) {
+  const { themeMode } = useAppPreferences();
+  const theme = getThemeColors(themeMode);
+  if (!visible) return null;
+  return (
+    <View style={styles.paginationRow}>
+      <Pressable
+        onPress={onPrev}
+        disabled={page === 1}
+        style={[styles.pageButton, { backgroundColor: theme.surfaceSecondary, borderColor: theme.border }, page === 1 && styles.pageButtonDisabled]}
+      >
+        <Ionicons name="chevron-back" size={16} color={page === 1 ? theme.mutedInk : theme.primary} />
+        <Text style={[styles.pageButtonLabel, { color: page === 1 ? theme.mutedInk : theme.primary }]}>Prev</Text>
+      </Pressable>
+      <Text style={[styles.resultSummary, { color: theme.mutedInk }]}>Page {page} of {totalPages}</Text>
+      <Pressable
+        onPress={onNext}
+        disabled={page === totalPages}
+        style={[styles.pageButton, { backgroundColor: theme.surfaceSecondary, borderColor: theme.border }, page === totalPages && styles.pageButtonDisabled]}
+      >
+        <Text style={[styles.pageButtonLabel, { color: page === totalPages ? theme.mutedInk : theme.primary }]}>Next</Text>
+        <Ionicons name="chevron-forward" size={16} color={page === totalPages ? theme.mutedInk : theme.primary} />
+      </Pressable>
     </View>
   );
 }
@@ -947,4 +1045,9 @@ const styles = StyleSheet.create({
 
   logHeaderRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   resultSummary: { fontSize: 12, color: colors.mutedInk, fontWeight: '600' },
+  paginationRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: spacing.md, paddingTop: spacing.sm },
+  pageButton: { flexDirection: 'row', alignItems: 'center', gap: 4, borderRadius: radii.lg, borderWidth: 1, borderColor: colors.border, paddingHorizontal: 12, paddingVertical: 8, backgroundColor: colors.surfaceSecondary },
+  pageButtonDisabled: { opacity: 0.45 },
+  pageButtonLabel: { color: colors.primary, fontSize: 12, fontWeight: '800' },
+  pageButtonLabelDisabled: { color: colors.mutedInk },
 });

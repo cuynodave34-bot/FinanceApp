@@ -5,7 +5,6 @@ import {
   ScrollView,
   StyleSheet,
   Text,
-  TextInput,
   View,
 } from 'react-native';
 
@@ -17,7 +16,7 @@ import { useAuth } from '@/features/auth/provider/AuthProvider';
 import { useAppPreferences } from '@/features/preferences/provider/AppPreferencesProvider';
 import { getAppLockAvailability } from '@/features/preferences/services/appLock';
 import { syncReminderNotifications } from '@/services/reminders/syncReminderNotifications';
-import { colors, spacing, radii, shadows } from '@/shared/theme/colors';
+import { CardTint, colors, getThemeColors, spacing, radii, shadows } from '@/shared/theme/colors';
 import {
   Reminder,
   ReminderType,
@@ -45,10 +44,16 @@ export function SettingsScreen() {
   const router = useRouter();
   const {
     balancesHidden,
+    appLockTimeout,
     biometricLockEnabled,
+    themeMode,
+    cardTint,
     preferencesLoading,
+    setAppLockTimeout,
     setBiometricLockEnabled,
+    setCardTint,
     toggleBalancesHidden,
+    toggleThemeMode,
   } = useAppPreferences();
   const [reminders, setReminders] = useState<Reminder[]>([]);
   const [status, setStatus] = useState<string | null>(null);
@@ -216,36 +221,84 @@ export function SettingsScreen() {
       }),
     [reminderDrafts, reminders]
   );
+  const theme = getThemeColors(themeMode);
+  const cardTintOptions: { value: CardTint; label: string }[] = [
+    { value: 'purple', label: 'Plum' },
+    { value: 'blue', label: 'Blue' },
+    { value: 'teal', label: 'Teal' },
+    { value: 'amber', label: 'Gold' },
+    { value: 'rose', label: 'Rose' },
+    { value: 'slate', label: 'Slate' },
+  ];
+  const appLockTimeoutOptions = [
+    { value: 'immediate', label: 'Every open' },
+    { value: 'one_minute', label: '1 minute' },
+    { value: 'five_minutes', label: '5 minutes' },
+    { value: 'app_close', label: 'App close' },
+  ] as const;
 
   return (
     <ScrollView
-      style={styles.screen}
+      style={[styles.screen, { backgroundColor: theme.canvas }]}
       contentContainerStyle={styles.content}
       showsVerticalScrollIndicator={false}
     >
       <View style={styles.headerRow}>
-        <Text style={styles.pageTitle}>Profile</Text>
-        <Pressable onPress={signOut} style={styles.iconButton}>
-          <Ionicons name="log-out-outline" size={20} color={colors.ink} />
+        <Text style={[styles.pageTitle, { color: theme.ink }]}>Profile</Text>
+        <Pressable onPress={signOut} style={[styles.iconButton, { backgroundColor: theme.surface, borderColor: theme.border }]}>
+          <Ionicons name="log-out-outline" size={20} color={theme.ink} />
         </Pressable>
       </View>
-      <View style={[styles.profileCard, shadows.small]}>
-        <View style={styles.profileIconCircle}>
-          <Ionicons name="person" size={28} color={colors.primary} />
+      <View style={[styles.profileCard, shadows.small, { backgroundColor: theme.surface, borderColor: theme.border }]}>
+        <View style={[styles.profileIconCircle, { backgroundColor: theme.primaryLight }]}>
+          <Ionicons name="person" size={28} color={theme.primary} />
         </View>
         <View style={styles.profileInfo}>
-          <Text style={styles.profileName}>{user?.email ?? 'Guest'}</Text>
-          <Text style={styles.profileRole}>Account Owner</Text>
+          <Text style={[styles.profileName, { color: theme.ink }]}>{user?.email ?? 'Guest'}</Text>
+          <Text style={[styles.profileRole, { color: theme.mutedInk }]}>Account Owner</Text>
         </View>
       </View>
-      {status ? <Text style={styles.status}>{status}</Text> : null}
+      {status ? <Text style={[styles.status, { color: theme.ink }]}>{status}</Text> : null}
 
-      <View style={[styles.card, shadows.small]}>
-        <Text style={styles.cardTitle}>Privacy</Text>
-        <View style={styles.itemRow}>
+      <View style={[styles.card, shadows.small, { backgroundColor: theme.surface, borderColor: theme.border }]}>
+        <Text style={[styles.cardTitle, { color: theme.ink }]}>Appearance</Text>
+        <View style={[styles.itemRow, { borderBottomColor: theme.border }]}>
           <View style={styles.itemCopy}>
-            <Text style={styles.itemTitle}>Hide balances across the app</Text>
-            <Text style={styles.itemMeta}>
+            <Text style={[styles.itemTitle, { color: theme.ink }]}>Dark mode</Text>
+            <Text style={[styles.itemMeta, { color: theme.mutedInk }]}>
+              {themeMode === 'dark' ? 'A low-glare interface is active.' : 'The light interface is active.'}
+            </Text>
+          </View>
+          <Pressable onPress={() => toggleThemeMode()}>
+            <Text style={[styles.inlineAction, { color: theme.primary }]}>{themeMode === 'dark' ? 'Light' : 'Dark'}</Text>
+          </Pressable>
+        </View>
+        <Text style={[styles.itemMeta, { color: theme.mutedInk }]}>Home card color</Text>
+        <View style={styles.tintRow}>
+          {cardTintOptions.map((option) => (
+            <Pressable
+              key={option.value}
+              onPress={() => setCardTint(option.value)}
+              style={[
+                styles.tintButton,
+                {
+                  backgroundColor: theme.accountCard[option.value],
+                  borderColor: cardTint === option.value ? theme.primary : theme.border,
+                },
+              ]}
+            >
+              <Text style={[styles.tintLabel, { color: theme.ink }]}>{option.label}</Text>
+            </Pressable>
+          ))}
+        </View>
+      </View>
+
+      <View style={[styles.card, shadows.small, { backgroundColor: theme.surface, borderColor: theme.border }]}>
+        <Text style={[styles.cardTitle, { color: theme.ink }]}>Privacy</Text>
+        <View style={[styles.itemRow, { borderBottomColor: theme.border }]}>
+          <View style={styles.itemCopy}>
+            <Text style={[styles.itemTitle, { color: theme.ink }]}>Hide balances across the app</Text>
+            <Text style={[styles.itemMeta, { color: theme.mutedInk }]}>
               {preferencesLoading
                 ? 'Loading preference...'
                 : balancesHidden
@@ -254,35 +307,58 @@ export function SettingsScreen() {
             </Text>
           </View>
           <Pressable onPress={() => toggleBalancesHidden()}>
-            <Text style={styles.inlineAction}>{balancesHidden ? 'Show' : 'Hide'}</Text>
+            <Text style={[styles.inlineAction, { color: theme.primary }]}>{balancesHidden ? 'Show' : 'Hide'}</Text>
           </Pressable>
         </View>
       </View>
 
-      <View style={[styles.card, shadows.small]}>
-        <Text style={styles.cardTitle}>App Lock</Text>
-        <View style={styles.itemRow}>
+      <View style={[styles.card, shadows.small, { backgroundColor: theme.surface, borderColor: theme.border }]}>
+        <Text style={[styles.cardTitle, { color: theme.ink }]}>App Lock</Text>
+        <View style={[styles.itemRow, { borderBottomColor: theme.border }]}>
           <View style={styles.itemCopy}>
-            <Text style={styles.itemTitle}>Biometric or device credential gate</Text>
-            <Text style={styles.itemMeta}>
+            <Text style={[styles.itemTitle, { color: theme.ink }]}>Biometric or device credential gate</Text>
+            <Text style={[styles.itemMeta, { color: theme.mutedInk }]}>
               {preferencesLoading
                 ? 'Loading preference...'
                 : biometricLockEnabled
                   ? 'App lock is enabled.'
                   : 'App lock is disabled.'}
             </Text>
-            <Text style={styles.itemMeta}>{lockAvailability}</Text>
+            <Text style={[styles.itemMeta, { color: theme.mutedInk }]}>{lockAvailability}</Text>
           </View>
           <Pressable onPress={handleToggleBiometricLock}>
-            <Text style={styles.inlineAction}>{biometricLockEnabled ? 'Disable' : 'Enable'}</Text>
+            <Text style={[styles.inlineAction, { color: theme.primary }]}>{biometricLockEnabled ? 'Disable' : 'Enable'}</Text>
           </Pressable>
+        </View>
+        <Text style={[styles.itemMeta, { color: theme.mutedInk }]}>Lock timeout</Text>
+        <View style={styles.optionGrid}>
+          {appLockTimeoutOptions.map((option) => {
+            const selected = appLockTimeout === option.value;
+            return (
+              <Pressable
+                key={option.value}
+                onPress={() => setAppLockTimeout(option.value)}
+                style={[
+                  styles.optionButton,
+                  {
+                    backgroundColor: selected ? theme.primary : theme.surfaceSecondary,
+                    borderColor: selected ? theme.primary : theme.border,
+                  },
+                ]}
+              >
+                <Text style={[styles.optionLabel, { color: selected ? theme.surface : theme.ink }]}>
+                  {option.label}
+                </Text>
+              </Pressable>
+            );
+          })}
         </View>
       </View>
 
-      <View style={[styles.card, shadows.small]}>
-        <Text style={styles.cardTitle}>Reminders</Text>
+      <View style={[styles.card, shadows.small, { backgroundColor: theme.surface, borderColor: theme.border }]}>
+        <Text style={[styles.cardTitle, { color: theme.ink }]}>Reminders</Text>
         {reminders.length === 0 ? (
-          <Text style={styles.emptyText}>Reminder preferences are still bootstrapping.</Text>
+          <Text style={[styles.emptyText, { color: theme.mutedInk }]}>Reminder preferences are still bootstrapping.</Text>
         ) : (
           reminders.map((reminder) => {
             const draft = reminderDrafts[reminder.id] ?? {
@@ -291,11 +367,11 @@ export function SettingsScreen() {
             };
 
             return (
-              <View key={reminder.id} style={styles.reminderCard}>
+              <View key={reminder.id} style={[styles.reminderCard, { backgroundColor: theme.surfaceSecondary, borderColor: theme.border }]}>
                 <View style={styles.reminderHeader}>
                   <View style={styles.itemCopy}>
-                    <Text style={styles.itemTitle}>{reminderLabels[reminder.type]}</Text>
-                    <Text style={styles.itemMeta}>
+                    <Text style={[styles.itemTitle, { color: theme.ink }]}>{reminderLabels[reminder.type]}</Text>
+                    <Text style={[styles.itemMeta, { color: theme.mutedInk }]}>
                       {draft.isEnabled ? 'Enabled daily' : 'Disabled'}
                     </Text>
                   </View>
@@ -310,7 +386,7 @@ export function SettingsScreen() {
                       }))
                     }
                   >
-                    <Text style={styles.inlineAction}>{draft.isEnabled ? 'Disable' : 'Enable'}</Text>
+                    <Text style={[styles.inlineAction, { color: theme.primary }]}>{draft.isEnabled ? 'Disable' : 'Enable'}</Text>
                   </Pressable>
                 </View>
                 <TimePickerField
@@ -330,7 +406,7 @@ export function SettingsScreen() {
             );
           })
         )}
-        <Text style={styles.helperText}>Tap the field to pick a time. 24-hour format is used.</Text>
+        <Text style={[styles.helperText, { color: theme.mutedInk }]}>Tap the field to pick a time. 24-hour format is used.</Text>
         <Pressable
           onPress={handleSaveReminders}
           disabled={savingReminders || !hasReminderChanges}
@@ -345,40 +421,128 @@ export function SettingsScreen() {
         </Pressable>
       </View>
 
-      <View style={[styles.card, shadows.small]}>
-        <Text style={styles.cardTitle}>Manage</Text>
+      <View style={[styles.card, shadows.small, { backgroundColor: theme.surface, borderColor: theme.border }]}>
+        <Text style={[styles.cardTitle, { color: theme.ink }]}>Manage</Text>
 
         <Pressable
           onPress={() => router.push('/accounts')}
-          style={[styles.menuRow, styles.menuRowBorder]}
+          style={[styles.menuRow, styles.menuRowBorder, { borderBottomColor: theme.border }]}
         >
           <View style={styles.itemCopy}>
-            <Text style={styles.itemTitle}>Accounts</Text>
-            <Text style={styles.itemMeta}>Add, edit and archive accounts</Text>
+            <Text style={[styles.itemTitle, { color: theme.ink }]}>Accounts</Text>
+            <Text style={[styles.itemMeta, { color: theme.mutedInk }]}>Add, edit and archive accounts</Text>
           </View>
-          <Ionicons name="chevron-forward" size={18} color={colors.mutedInk} />
+          <Ionicons name="chevron-forward" size={18} color={theme.mutedInk} />
+        </Pressable>
+
+        <Pressable
+          onPress={() => router.push('/onboarding' as any)}
+          style={[styles.menuRow, styles.menuRowBorder, { borderBottomColor: theme.border }]}
+        >
+          <View style={styles.itemCopy}>
+            <Text style={[styles.itemTitle, { color: theme.ink }]}>Setup Wizard</Text>
+            <Text style={[styles.itemMeta, { color: theme.mutedInk }]}>Finish core setup and first-week learning steps</Text>
+          </View>
+          <Ionicons name="chevron-forward" size={18} color={theme.mutedInk} />
         </Pressable>
 
         <Pressable
           onPress={() => router.push('/categories')}
-          style={[styles.menuRow, styles.menuRowBorder]}
+          style={[styles.menuRow, styles.menuRowBorder, { borderBottomColor: theme.border }]}
         >
           <View style={styles.itemCopy}>
-            <Text style={styles.itemTitle}>Categories</Text>
-            <Text style={styles.itemMeta}>Organise transaction categories</Text>
+            <Text style={[styles.itemTitle, { color: theme.ink }]}>Categories</Text>
+            <Text style={[styles.itemMeta, { color: theme.mutedInk }]}>Organise transaction categories</Text>
           </View>
-          <Ionicons name="chevron-forward" size={18} color={colors.mutedInk} />
+          <Ionicons name="chevron-forward" size={18} color={theme.mutedInk} />
         </Pressable>
 
         <Pressable
           onPress={() => router.push('/import')}
+          style={[styles.menuRow, styles.menuRowBorder, { borderBottomColor: theme.border }]}
+        >
+          <View style={styles.itemCopy}>
+            <Text style={[styles.itemTitle, { color: theme.ink }]}>Import Transactions</Text>
+            <Text style={[styles.itemMeta, { color: theme.mutedInk }]}>Import from CSV</Text>
+          </View>
+          <Ionicons name="chevron-forward" size={18} color={theme.mutedInk} />
+        </Pressable>
+
+        <Pressable
+          onPress={() => router.push('/templates' as any)}
+          style={[styles.menuRow, styles.menuRowBorder, { borderBottomColor: theme.border }]}
+        >
+          <View style={styles.itemCopy}>
+            <Text style={[styles.itemTitle, { color: theme.ink }]}>Transaction Templates</Text>
+            <Text style={[styles.itemMeta, { color: theme.mutedInk }]}>Create reusable transaction presets</Text>
+          </View>
+          <Ionicons name="chevron-forward" size={18} color={theme.mutedInk} />
+        </Pressable>
+
+        <Pressable
+          onPress={() => router.push('/safety' as any)}
+          style={[styles.menuRow, styles.menuRowBorder, { borderBottomColor: theme.border }]}
+        >
+          <View style={styles.itemCopy}>
+            <Text style={[styles.itemTitle, { color: theme.ink }]}>Spending Safety</Text>
+            <Text style={[styles.itemMeta, { color: theme.mutedInk }]}>Survive-until date, wishlist, waiting room, and risk alerts</Text>
+          </View>
+          <Ionicons name="chevron-forward" size={18} color={theme.mutedInk} />
+        </Pressable>
+
+        <Pressable
+          onPress={() => router.push('/wishlist' as any)}
+          style={[styles.menuRow, styles.menuRowBorder, { borderBottomColor: theme.border }]}
+        >
+          <View style={styles.itemCopy}>
+            <Text style={[styles.itemTitle, { color: theme.ink }]}>Wishlist</Text>
+            <Text style={[styles.itemMeta, { color: theme.mutedInk }]}>Review wanted purchases and affordability</Text>
+          </View>
+          <Ionicons name="chevron-forward" size={18} color={theme.mutedInk} />
+        </Pressable>
+
+        <Pressable
+          onPress={() => router.push('/waiting-room' as any)}
+          style={[styles.menuRow, styles.menuRowBorder, { borderBottomColor: theme.border }]}
+        >
+          <View style={styles.itemCopy}>
+            <Text style={[styles.itemTitle, { color: theme.ink }]}>Purchase Waiting Room</Text>
+            <Text style={[styles.itemMeta, { color: theme.mutedInk }]}>Review delayed non-essential purchases</Text>
+          </View>
+          <Ionicons name="chevron-forward" size={18} color={theme.mutedInk} />
+        </Pressable>
+
+        <Pressable
+          onPress={() => router.push('/quick-actions' as any)}
+          style={[styles.menuRow, styles.menuRowBorder, { borderBottomColor: theme.border }]}
+        >
+          <View style={styles.itemCopy}>
+            <Text style={[styles.itemTitle, { color: theme.ink }]}>Favorite Quick Actions</Text>
+            <Text style={[styles.itemMeta, { color: theme.mutedInk }]}>Choose shortcuts shown on Home</Text>
+          </View>
+          <Ionicons name="chevron-forward" size={18} color={theme.mutedInk} />
+        </Pressable>
+
+        <Pressable
+          onPress={() => router.push('/reliability' as any)}
+          style={[styles.menuRow, styles.menuRowBorder, { borderBottomColor: theme.border }]}
+        >
+          <View style={styles.itemCopy}>
+            <Text style={[styles.itemTitle, { color: theme.ink }]}>Trust & Reliability</Text>
+            <Text style={[styles.itemMeta, { color: theme.mutedInk }]}>Balance checks, sync history, and backup reminders</Text>
+          </View>
+          <Ionicons name="chevron-forward" size={18} color={theme.mutedInk} />
+        </Pressable>
+
+        <Pressable
+          onPress={() => router.push('/trash' as any)}
           style={styles.menuRow}
         >
           <View style={styles.itemCopy}>
-            <Text style={styles.itemTitle}>Import Transactions</Text>
-            <Text style={styles.itemMeta}>Import from CSV</Text>
+            <Text style={[styles.itemTitle, { color: theme.ink }]}>Trash</Text>
+            <Text style={[styles.itemMeta, { color: theme.mutedInk }]}>Restore deleted transactions</Text>
           </View>
-          <Ionicons name="chevron-forward" size={18} color={colors.mutedInk} />
+          <Ionicons name="chevron-forward" size={18} color={theme.mutedInk} />
         </Pressable>
       </View>
     </ScrollView>
@@ -410,6 +574,12 @@ const styles = StyleSheet.create({
   itemTitle: { color: colors.ink, fontSize: 15, fontWeight: '700' },
   itemMeta: { color: colors.mutedInk, fontSize: 12 },
   inlineAction: { color: colors.primary, fontSize: 12, fontWeight: '700' },
+  tintRow: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
+  tintButton: { minWidth: 72, borderRadius: radii.md, borderWidth: 2, paddingHorizontal: spacing.sm, paddingVertical: 10, alignItems: 'center' },
+  tintLabel: { fontSize: 12, fontWeight: '800' },
+  optionGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
+  optionButton: { minWidth: 92, borderRadius: radii.md, borderWidth: 1, paddingHorizontal: spacing.sm, paddingVertical: 10, alignItems: 'center' },
+  optionLabel: { fontSize: 12, fontWeight: '800' },
   reminderCard: { borderRadius: radii.lg, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surfaceSecondary, padding: spacing.md, gap: spacing.sm },
   reminderHeader: { flexDirection: 'row', justifyContent: 'space-between', gap: 12 },
   menuRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 12 },

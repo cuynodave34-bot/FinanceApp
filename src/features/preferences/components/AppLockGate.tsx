@@ -12,12 +12,13 @@ import { colors } from '@/shared/theme/colors';
 
 export function AppLockGate({ children }: PropsWithChildren) {
   const { signOut } = useAuth();
-  const { biometricLockEnabled, preferencesLoading } = useAppPreferences();
+  const { appLockTimeout, biometricLockEnabled, preferencesLoading } = useAppPreferences();
   const [isUnlocked, setIsUnlocked] = useState(false);
   const [authenticating, setAuthenticating] = useState(false);
   const [lockMessage, setLockMessage] = useState<string | null>(null);
   const hasResolvedInitialState = useRef(false);
   const appState = useRef(AppState.currentState);
+  const backgroundedAt = useRef<number | null>(null);
 
   const unlockApp = useCallback(async () => {
     if (preferencesLoading || !biometricLockEnabled || authenticating) {
@@ -91,7 +92,10 @@ export function AppLockGate({ children }: PropsWithChildren) {
       }
 
       if (nextState === 'background' || nextState === 'inactive') {
-        setIsUnlocked(false);
+        backgroundedAt.current = Date.now();
+        if (appLockTimeout === 'immediate') {
+          setIsUnlocked(false);
+        }
         return;
       }
 
@@ -99,6 +103,21 @@ export function AppLockGate({ children }: PropsWithChildren) {
         nextState === 'active' &&
         (previousState === 'background' || previousState === 'inactive')
       ) {
+        const elapsedMs = backgroundedAt.current ? Date.now() - backgroundedAt.current : 0;
+        const timeoutMs =
+          appLockTimeout === 'one_minute'
+            ? 60 * 1000
+            : appLockTimeout === 'five_minutes'
+              ? 5 * 60 * 1000
+              : appLockTimeout === 'app_close'
+                ? Number.POSITIVE_INFINITY
+                : 0;
+
+        if (elapsedMs < timeoutMs) {
+          return;
+        }
+
+        setIsUnlocked(false);
         unlockApp().catch((error) => {
           console.warn('Failed to unlock app on foreground', error);
         });
@@ -108,7 +127,7 @@ export function AppLockGate({ children }: PropsWithChildren) {
     return () => {
       subscription.remove();
     };
-  }, [biometricLockEnabled, unlockApp]);
+  }, [appLockTimeout, biometricLockEnabled, unlockApp]);
 
   if (preferencesLoading) {
     return (
@@ -128,7 +147,7 @@ export function AppLockGate({ children }: PropsWithChildren) {
         <Text style={styles.kicker}>App Lock</Text>
         <Text style={styles.title}>Unlock to view balances and transactions.</Text>
         <Text style={styles.subtitle}>
-          This app now asks for device authentication when it opens or returns to the foreground.
+          This app asks for device authentication based on your App Lock timeout setting.
         </Text>
         {lockMessage ? <Text style={styles.status}>{lockMessage}</Text> : null}
         <Pressable

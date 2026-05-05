@@ -32,7 +32,7 @@ export function ImportScreen() {
       ].filter(Boolean);
       setStatus(`Import complete: ${parts.join(', ')}.`);
       if (result.errors.length > 0) {
-        console.warn('CSV import errors', result.errors);
+        console.warn(`CSV import completed with ${result.errors.length} row error(s).`);
       }
       setCsvImportText('');
     } catch (error) {

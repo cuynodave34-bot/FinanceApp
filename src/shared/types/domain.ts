@@ -1,7 +1,20 @@
 export type AccountType = 'cash' | 'bank' | 'e_wallet' | 'other';
 export type CategoryType = 'income' | 'expense' | 'both';
 export type TransactionType = 'income' | 'expense' | 'transfer';
+export type PlanningType = 'planned' | 'unplanned' | 'impulse' | 'emergency' | 'unknown';
 export type ReminderType = 'morning_checkin' | 'afternoon_log' | 'night_review';
+export type PurchaseWaitingStatus =
+  | 'waiting'
+  | 'approved'
+  | 'cancelled'
+  | 'purchased'
+  | 'moved_to_wishlist';
+export type WishlistAffordabilityStatus =
+  | 'affordable'
+  | 'not_affordable'
+  | 'not_recommended'
+  | 'purchased';
+export type AlertSeverity = 'info' | 'warning' | 'danger';
 
 export type Account = {
   id: string;
@@ -35,6 +48,7 @@ export type Transaction = {
   userId: string;
   type: TransactionType;
   amount: number;
+  transferFee?: number;
   accountId?: string | null;
   toAccountId?: string | null;
   savingsGoalId?: string | null;
@@ -47,8 +61,47 @@ export type Transaction = {
   latitude?: number | null;
   longitude?: number | null;
   isLazyEntry: boolean;
+  isIncomplete?: boolean;
+  needsReview?: boolean;
+  reviewReason?: string | null;
+  planningType?: PlanningType;
   isImpulse: boolean;
+  moodTag?: string | null;
+  reasonTag?: string | null;
   deletedAt?: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type TransactionTemplate = {
+  id: string;
+  userId: string;
+  name: string;
+  type: TransactionType;
+  defaultAmount?: number | null;
+  categoryId?: string | null;
+  subcategoryId?: string | null;
+  accountId?: string | null;
+  toAccountId?: string | null;
+  savingsGoalId?: string | null;
+  fromSavingsGoalId?: string | null;
+  notes?: string | null;
+  isPlannedDefault: boolean;
+  isImpulseDefault: boolean;
+  isArchived: boolean;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type FavoriteAction = {
+  id: string;
+  userId: string;
+  actionType: string;
+  label: string;
+  icon?: string | null;
+  position: number;
+  metadata: Record<string, unknown>;
+  isArchived: boolean;
   createdAt: string;
   updatedAt: string;
 };
@@ -110,6 +163,67 @@ export type Debt = {
   dueDate?: string | null;
   notes?: string | null;
   deletedAt?: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type PurchaseWaitingRoomItem = {
+  id: string;
+  userId: string;
+  itemName: string;
+  estimatedPrice: number;
+  categoryId?: string | null;
+  reason?: string | null;
+  waitUntil?: string | null;
+  status: PurchaseWaitingStatus;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type WishlistItem = {
+  id: string;
+  userId: string;
+  itemName: string;
+  estimatedPrice: number;
+  categoryId?: string | null;
+  priority?: string | null;
+  status: WishlistAffordabilityStatus;
+  notes?: string | null;
+  targetDate?: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type UserAlert = {
+  id: string;
+  userId: string;
+  alertType: string;
+  title: string;
+  message: string;
+  severity: AlertSeverity;
+  isRead: boolean;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type BalanceAdjustment = {
+  id: string;
+  userId: string;
+  accountId: string;
+  oldBalance: number;
+  newBalance: number;
+  difference: number;
+  reason?: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type ExportHistoryItem = {
+  id: string;
+  userId: string;
+  exportType: string;
+  fileFormat: string;
   createdAt: string;
   updatedAt: string;
 };

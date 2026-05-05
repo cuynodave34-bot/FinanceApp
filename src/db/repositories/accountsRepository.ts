@@ -4,6 +4,8 @@ import { enqueueSyncItem } from '@/sync/queue/repository';
 import { Account, AccountType } from '@/shared/types/domain';
 import { createId } from '@/shared/utils/id';
 import { nowIso } from '@/shared/utils/time';
+import { normalizeMoneyAmount } from '@/shared/validation/money';
+import { normalizeRequiredTextInput } from '@/shared/validation/text';
 
 type AccountRow = {
   id: string;
@@ -47,6 +49,23 @@ function mapAccount(row: AccountRow): Account {
   };
 }
 
+const allowedAccountTypes: AccountType[] = ['cash', 'bank', 'e_wallet', 'other'];
+
+function normalizeAccountType(value: AccountType) {
+  if (!allowedAccountTypes.includes(value)) {
+    throw new Error('Invalid account type.');
+  }
+
+  return value;
+}
+
+function normalizeCurrency(value: string | undefined) {
+  return normalizeRequiredTextInput(value ?? 'PHP', {
+    fieldName: 'Currency',
+    maxLength: 8,
+  }).toUpperCase();
+}
+
 export async function listAccountsByUser(userId: string) {
   const database = getDatabase();
   const rows = await database.getAllAsync<AccountRow>(
@@ -76,10 +95,14 @@ export async function createAccount(input: CreateAccountInput) {
   const account: Account = {
     id: createId(),
     userId: input.userId,
-    name: input.name.trim(),
-    type: input.type,
-    initialBalance: input.initialBalance ?? 0,
-    currency: input.currency ?? 'PHP',
+    name: normalizeRequiredTextInput(input.name, { fieldName: 'Account name', maxLength: 80 }),
+    type: normalizeAccountType(input.type),
+    initialBalance: normalizeMoneyAmount(input.initialBalance ?? 0, {
+      fieldName: 'Initial balance',
+      allowZero: true,
+      allowNegative: true,
+    }),
+    currency: normalizeCurrency(input.currency),
     isSpendable: input.isSpendable ?? true,
     isArchived: false,
     deletedAt: null,
@@ -138,10 +161,14 @@ export async function updateAccount(input: UpdateAccountInput) {
         updated_at = ?
     where id = ? and user_id = ?`,
     [
-      input.name.trim(),
-      input.type,
-      input.initialBalance,
-      input.currency,
+      normalizeRequiredTextInput(input.name, { fieldName: 'Account name', maxLength: 80 }),
+      normalizeAccountType(input.type),
+      normalizeMoneyAmount(input.initialBalance, {
+        fieldName: 'Initial balance',
+        allowZero: true,
+        allowNegative: true,
+      }),
+      normalizeCurrency(input.currency),
       input.isSpendable ? 1 : 0,
       input.isArchived ? 1 : 0,
       updatedAt,

@@ -24,10 +24,12 @@ import { colors, spacing, radii, shadows } from '@/shared/theme/colors';
 import { Account, Budget, Savings, TransactionType } from '@/shared/types/domain';
 import { formatTransactionAccountLabel } from '@/shared/utils/accountLabels';
 import { formatMoney, maskFinancialValue } from '@/shared/utils/format';
+import { getTransferReceivedAmount } from '@/shared/utils/transactionAmounts';
 import { addDays, isDateKey, toDateKey } from '@/shared/utils/time';
 import { AppModal } from '@/shared/ui/Modal';
 
 type CalendarTransactionType = Exclude<TransactionType, 'transfer'>;
+type CalendarViewMode = 'calendar' | 'heatmap';
 
 function daysInMonth(year: number, month: number) {
   return new Date(year, month + 1, 0).getDate();
@@ -101,7 +103,7 @@ function calculateSpendableFunds({
       if (transaction.toAccountId) {
         accountBalances.set(
           transaction.toAccountId,
-          (accountBalances.get(transaction.toAccountId) ?? 0) + transaction.amount
+          (accountBalances.get(transaction.toAccountId) ?? 0) + getTransferReceivedAmount(transaction)
         );
       }
     }
@@ -117,6 +119,30 @@ function calculateSpendableFunds({
   return Number((spendableAccountsTotal + spendableSavingsTotal).toFixed(2));
 }
 
+function getCalendarHeatmapIntensity(amount: number, maxAmount: number) {
+  if (amount <= 0 || maxAmount <= 0) return 'none';
+  const ratio = amount / maxAmount;
+  if (ratio <= 0.25) return 'low';
+  if (ratio <= 0.5) return 'medium';
+  if (ratio <= 0.8) return 'high';
+  return 'very_high';
+}
+
+function getCalendarHeatmapColor(intensity: ReturnType<typeof getCalendarHeatmapIntensity>) {
+  if (intensity === 'low') return colors.infoLight;
+  if (intensity === 'medium') return colors.warningLight;
+  if (intensity === 'high') return colors.warning;
+  if (intensity === 'very_high') return colors.danger;
+  return colors.surfaceSecondary;
+}
+
+function formatCompactMoney(value: number) {
+  if (value >= 1000) {
+    return `${Math.round(value / 1000)}k`;
+  }
+  return String(Math.round(value));
+}
+
 export function CalendarScreen() {
   const { user } = useAuth();
   const { balancesHidden } = useAppPreferences();
@@ -127,6 +153,7 @@ export function CalendarScreen() {
   const [budgets, setBudgets] = useState<Budget[]>([]);
   const [now, setNow] = useState(new Date());
   const [selectedDate, setSelectedDate] = useState(toDateKey(new Date()));
+  const [viewMode, setViewMode] = useState<CalendarViewMode>('calendar');
   const [budgetAmount, setBudgetAmount] = useState('');
   const [savingBudget, setSavingBudget] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
@@ -191,6 +218,28 @@ export function CalendarScreen() {
   }, [selectedBudget, selectedDate]);
 
   const selectedTxs = txByDate.get(selectedDate) ?? [];
+  const expenseTotalsByDate = useMemo(() => {
+    const totals = new Map<string, { amount: number; count: number }>();
+    for (const tx of transactions) {
+      if (tx.type !== 'expense') continue;
+      const date = tx.transactionAt.slice(0, 10);
+      const existing = totals.get(date) ?? { amount: 0, count: 0 };
+      totals.set(date, {
+        amount: Number((existing.amount + tx.amount).toFixed(2)),
+        count: existing.count + 1,
+      });
+    }
+    return totals;
+  }, [transactions]);
+  const visibleMonthMaxExpense = useMemo(() => {
+    let max = 0;
+    for (let day = 1; day <= totalDays; day += 1) {
+      const dateKey = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+      max = Math.max(max, expenseTotalsByDate.get(dateKey)?.amount ?? 0);
+    }
+    return max;
+  }, [expenseTotalsByDate, month, totalDays, year]);
+  const selectedExpenseTotal = expenseTotalsByDate.get(selectedDate)?.amount ?? 0;
 
   function prevMonth() {
     setNow(new Date(year, month - 1, 1));
@@ -296,6 +345,23 @@ export function CalendarScreen() {
 
       {status ? <Text style={styles.status}>{status}</Text> : null}
 
+      <View style={styles.modeToggleRow}>
+        {[
+          { value: 'calendar', label: 'Calendar' },
+          { value: 'heatmap', label: 'Heatmap' },
+        ].map((option) => (
+          <Pressable
+            key={option.value}
+            onPress={() => setViewMode(option.value as CalendarViewMode)}
+            style={[styles.modeToggle, viewMode === option.value && styles.modeToggleActive]}
+          >
+            <Text style={[styles.modeToggleLabel, viewMode === option.value && styles.modeToggleLabelActive]}>
+              {option.label}
+            </Text>
+          </Pressable>
+        ))}
+      </View>
+
       <View style={styles.calendarGrid}>
         {dayNames.map((d) => (
           <View key={d} style={styles.dayHeader}>
@@ -310,32 +376,67 @@ export function CalendarScreen() {
           const dateKey = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
           const isSelected = selectedDate === dateKey;
           const txTypes = getTxTypesForDate(txByDate.get(dateKey));
+          const expenseTotal = expenseTotalsByDate.get(dateKey)?.amount ?? 0;
+          const heatmapIntensity = getCalendarHeatmapIntensity(expenseTotal, visibleMonthMaxExpense);
+          const heatmapStyle =
+            viewMode === 'heatmap' && !isSelected
+              ? { backgroundColor: getCalendarHeatmapColor(heatmapIntensity) }
+              : null;
 
           return (
             <Pressable
               key={dateKey}
               onPress={() => handleDayPress(dateKey)}
-              style={[styles.dayCell, isSelected && styles.dayCellActive]}
+              style={[styles.dayCell, heatmapStyle, isSelected && styles.dayCellActive]}
             >
               <Text style={[styles.dayCellLabel, isSelected && styles.dayCellLabelActive]}>
                 {day}
               </Text>
-              <View style={styles.markerRow}>
-                {Array.from(txTypes).map((type) => (
-                  <View
-                    key={type}
-                    style={[
-                      styles.marker,
-                      type === 'income' && styles.markerIncome,
-                      type === 'expense' && styles.markerExpense,
-                    ]}
-                  />
-                ))}
-              </View>
+              {viewMode === 'calendar' ? (
+                <View style={styles.markerRow}>
+                  {Array.from(txTypes).map((type) => (
+                    <View
+                      key={type}
+                      style={[
+                        styles.marker,
+                        type === 'income' && styles.markerIncome,
+                        type === 'expense' && styles.markerExpense,
+                      ]}
+                    />
+                  ))}
+                </View>
+              ) : (
+                <Text style={[styles.heatmapAmount, isSelected && styles.dayCellLabelActive]}>
+                  {expenseTotal > 0 ? formatCompactMoney(expenseTotal) : ''}
+                </Text>
+              )}
             </Pressable>
           );
         })}
       </View>
+
+      {viewMode === 'heatmap' ? (
+        <View style={[styles.card, shadows.small]}>
+          <Text style={styles.cardTitle}>Spending heatmap for {monthLabel}</Text>
+          <Text style={styles.cardMeta}>
+            Darker days mean higher expense totals. Selected day: {maskFinancialValue(formatMoney(selectedExpenseTotal), balancesHidden)}.
+          </Text>
+          <View style={styles.heatmapLegendRow}>
+            {[
+              { label: 'None', color: colors.surfaceSecondary },
+              { label: 'Low', color: colors.infoLight },
+              { label: 'Medium', color: colors.warningLight },
+              { label: 'High', color: colors.warning },
+              { label: 'Very high', color: colors.danger },
+            ].map((item) => (
+              <View key={item.label} style={styles.heatmapLegendItem}>
+                <View style={[styles.heatmapLegendSwatch, { backgroundColor: item.color }]} />
+                <Text style={styles.heatmapLegendLabel}>{item.label}</Text>
+              </View>
+            ))}
+          </View>
+        </View>
+      ) : null}
 
       <View style={[styles.card, shadows.small]}>
         <View style={styles.cardHeaderRow}>
@@ -465,6 +566,11 @@ const styles = StyleSheet.create({
   arrow: { paddingHorizontal: 12, paddingVertical: 8, backgroundColor: colors.surface, borderRadius: radii.md, borderWidth: 1, borderColor: colors.border },
   arrowLabel: { fontSize: 18, fontWeight: '700', color: colors.ink },
   status: { color: colors.ink, fontSize: 13, lineHeight: 18, fontWeight: '600' },
+  modeToggleRow: { flexDirection: 'row', backgroundColor: colors.surface, borderRadius: radii.full, borderWidth: 1, borderColor: colors.border, padding: 4, gap: 4 },
+  modeToggle: { flex: 1, borderRadius: radii.full, paddingVertical: 10, alignItems: 'center' },
+  modeToggleActive: { backgroundColor: colors.primary },
+  modeToggleLabel: { color: colors.ink, fontSize: 13, fontWeight: '800' },
+  modeToggleLabelActive: { color: colors.surface },
   calendarGrid: { flexDirection: 'row', flexWrap: 'wrap', backgroundColor: colors.surface, borderRadius: radii.lg, borderWidth: 1, borderColor: colors.border, padding: 10 },
   dayHeader: { width: `${100 / 7}%`, alignItems: 'center', paddingVertical: 8 },
   dayHeaderLabel: { fontSize: 12, fontWeight: '700', color: colors.mutedInk },
@@ -476,6 +582,7 @@ const styles = StyleSheet.create({
   marker: { width: 8, height: 3, borderRadius: 1.5, backgroundColor: colors.mutedInk },
   markerIncome: { backgroundColor: colors.success },
   markerExpense: { backgroundColor: colors.danger },
+  heatmapAmount: { color: colors.ink, fontSize: 9, fontWeight: '800', minHeight: 11 },
   card: { backgroundColor: colors.surface, borderRadius: radii.xxl, padding: spacing.lg, gap: spacing.md, borderWidth: 1, borderColor: colors.border },
   cardHeaderRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12 },
   cardHeaderCopy: { flex: 1, gap: 4 },
@@ -500,4 +607,8 @@ const styles = StyleSheet.create({
   income: { color: colors.success },
   expense: { color: colors.danger },
   emptyText: { color: colors.mutedInk, fontSize: 14 },
+  heatmapLegendRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
+  heatmapLegendItem: { flexDirection: 'row', alignItems: 'center', gap: 5 },
+  heatmapLegendSwatch: { width: 14, height: 14, borderRadius: 4 },
+  heatmapLegendLabel: { color: colors.mutedInk, fontSize: 11, fontWeight: '700' },
 });

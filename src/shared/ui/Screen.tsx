@@ -1,7 +1,8 @@
 import { PropsWithChildren } from 'react';
 import { ScrollView, StyleSheet, Text, View } from 'react-native';
 
-import { colors } from '@/shared/theme/colors';
+import { useAppPreferences } from '@/features/preferences/provider/AppPreferencesProvider';
+import { colors, getThemeColors } from '@/shared/theme/colors';
 
 type ScreenProps = PropsWithChildren<{
   title: string;
@@ -9,17 +10,20 @@ type ScreenProps = PropsWithChildren<{
 }>;
 
 export function Screen({ title, subtitle, children }: ScreenProps) {
+  const { themeMode } = useAppPreferences();
+  const theme = getThemeColors(themeMode);
+
   return (
     <ScrollView
-      style={styles.screen}
+      style={[styles.screen, { backgroundColor: theme.canvas }]}
       contentContainerStyle={styles.content}
       showsVerticalScrollIndicator={false}
     >
-      <View style={styles.hero}>
-        <Text style={styles.title}>{title}</Text>
-        <Text style={styles.subtitle}>{subtitle}</Text>
+      <View style={[styles.hero, { backgroundColor: theme.surface, borderColor: theme.border }]}>
+        <Text style={[styles.title, { color: theme.ink }]}>{title}</Text>
+        <Text style={[styles.subtitle, { color: theme.mutedInk }]}>{subtitle}</Text>
       </View>
-      <View style={styles.body}>{children}</View>
+      <View style={[styles.body, { backgroundColor: theme.surface, borderColor: theme.border }]}>{children}</View>
     </ScrollView>
   );
 }

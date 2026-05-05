@@ -11,16 +11,23 @@ import {
   listTransactionsByUser,
   TransactionFeedItem,
 } from '@/db/repositories/transactionsRepository';
+import { createPurchaseWaitingRoomItem } from '@/db/repositories/purchaseWaitingRoomRepository';
+import { createWishlistItem } from '@/db/repositories/wishlistItemsRepository';
 import { useAuth } from '@/features/auth/provider/AuthProvider';
 import {
   checkExpenseBudgetGuard,
   ExpenseBudgetGuardResult,
 } from '@/services/budgets/expenseBudgetGuard';
 import { calculateCurrentSpendableFunds } from '@/services/balances/calculateCurrentSpendableFunds';
+import {
+  DuplicateTransactionCandidate,
+  findDuplicateTransaction,
+} from '@/services/transactions/findDuplicateTransaction';
 import { colors, radii, shadows, spacing } from '@/shared/theme/colors';
 import { Account, Category, Savings, TransactionType } from '@/shared/types/domain';
 import { formatAccountLabel } from '@/shared/utils/accountLabels';
 import { formatMoney } from '@/shared/utils/format';
+import { getTransferReceivedAmount } from '@/shared/utils/transactionAmounts';
 import { combineDateAndTime, toDateKey, toTimeKey } from '@/shared/utils/time';
 import { AppModal, ConfirmModal } from '@/shared/ui/Modal';
 
@@ -30,6 +37,9 @@ type QuickShortcut = {
   type: TransactionType;
   categoryName?: string;
 };
+
+type QuickSource = { type: 'account' | 'savings'; id: string };
+type QuickSaveTarget = 'transaction' | 'wishlist' | 'waiting_room';
 
 const shortcuts: QuickShortcut[] = [
   { label: 'Food', icon: 'restaurant-outline', type: 'expense', categoryName: 'Food' },
@@ -54,12 +64,18 @@ export function QuickAddScreen() {
   const [categories, setCategories] = useState<Category[]>([]);
   const [selected, setSelected] = useState<QuickShortcut | null>(null);
   const [amount, setAmount] = useState('');
-  const [source, setSource] = useState<{ type: 'account' | 'savings'; id: string } | null>(null);
+  const [source, setSource] = useState<QuickSource | null>(null);
+  const [saveTarget, setSaveTarget] = useState<QuickSaveTarget>('transaction');
   const [customCategoryName, setCustomCategoryName] = useState('');
   const [saving, setSaving] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
   const [budgetPrompt, setBudgetPrompt] = useState<ExpenseBudgetGuardResult | null>(null);
   const [transactions, setTransactions] = useState<TransactionFeedItem[]>([]);
+  const [duplicatePrompt, setDuplicatePrompt] = useState<{
+    candidate: DuplicateTransactionCandidate;
+    allowBudgetOverride: boolean;
+    allowNegativeBalance: boolean;
+  } | null>(null);
   const [negativeBalancePrompt, setNegativeBalancePrompt] = useState<{
     visible: boolean;
     onConfirm: () => void;
@@ -113,7 +129,7 @@ export function QuickAddScreen() {
           balance -= transaction.amount;
         }
         if (transaction.toAccountId === accountId) {
-          balance += transaction.amount;
+          balance += getTransferReceivedAmount(transaction);
         }
       }
     }
@@ -126,22 +142,118 @@ export function QuickAddScreen() {
     return savings.currentAmount - draftAmount;
   }
 
-  async function handleSave(allowBudgetOverride = false, allowNegativeBalance = false) {
+  function getFallbackSource(): QuickSource | null {
+    const spendableAccounts = accounts.filter((account) => account.isSpendable);
+    const accountPool = spendableAccounts.length > 0 ? spendableAccounts : accounts;
+
+    if (accountPool.length > 0) {
+      return { type: 'account', id: accountPool[0].id };
+    }
+    if (savingsList.length > 0) {
+      return { type: 'savings', id: savingsList[0].id };
+    }
+    return null;
+  }
+
+  function getRecentSourceForShortcut(shortcut: QuickShortcut): QuickSource | null {
+    const matchNames = [shortcut.categoryName, shortcut.label]
+      .filter(Boolean)
+      .map((value) => value!.toLowerCase());
+    const recentTransactions = [...transactions].sort(
+      (a, b) =>
+        new Date(b.transactionAt).getTime() - new Date(a.transactionAt).getTime()
+    );
+
+    for (const transaction of recentTransactions) {
+      if (transaction.deletedAt || transaction.isLazyEntry || transaction.type !== 'expense') {
+        continue;
+      }
+
+      const categoryName = transaction.categoryName?.toLowerCase();
+      const notes = transaction.notes?.trim().toLowerCase();
+      const matchesShortcut =
+        (categoryName && matchNames.includes(categoryName)) ||
+        (notes && matchNames.includes(notes));
+
+      if (!matchesShortcut) {
+        continue;
+      }
+
+      if (
+        transaction.accountId &&
+        accounts.some((account) => account.id === transaction.accountId)
+      ) {
+        return { type: 'account', id: transaction.accountId };
+      }
+      if (
+        transaction.fromSavingsGoalId &&
+        savingsList.some((savings) => savings.id === transaction.fromSavingsGoalId)
+      ) {
+        return { type: 'savings', id: transaction.fromSavingsGoalId };
+      }
+    }
+
+    return null;
+  }
+
+  function selectShortcut(shortcut: QuickShortcut) {
+    setSelected(shortcut);
+    setStatus(null);
+    if (source) return;
+
+    const defaultSource = getRecentSourceForShortcut(shortcut) ?? getFallbackSource();
+    if (defaultSource) {
+      setSource(defaultSource);
+    }
+  }
+
+  function findExistingCategoryId(name: string, type: TransactionType) {
+    return (
+      categories.find(
+        (category) =>
+          category.name.toLowerCase() === name.toLowerCase() &&
+          (category.type === type || category.type === 'both')
+      )?.id ?? null
+    );
+  }
+
+  async function handleSave(
+    allowBudgetOverride = false,
+    allowNegativeBalance = false,
+    allowDuplicate = false
+  ) {
     if (!user || saving || !selected) return;
     const value = Number(amount);
     if (!amount.trim() || Number.isNaN(value) || value <= 0) { setStatus('Enter a valid amount.'); return; }
-    if (!source) { setStatus('Select an account or spendable savings.'); return; }
-    const spendableFunds = calculateCurrentSpendableFunds({
-      accounts,
-      savings: savingsList,
-      transactions,
-    });
-    if (value > spendableFunds) {
-      setSpendableBalancePrompt({ spendableFunds });
-      return;
+    const isSafetyCapture = saveTarget !== 'transaction';
+    if (!source && !isSafetyCapture) { setStatus('Select an account or spendable savings.'); return; }
+
+    let categoryId: string | null = null;
+    let notes = selected.label;
+    if (selected.label === 'Custom') {
+      if (!customCategoryName.trim()) {
+        setStatus('Enter a custom category name.');
+        return;
+      }
+      notes = customCategoryName.trim();
+      categoryId = findExistingCategoryId(notes, 'expense');
+    } else if (selected.categoryName) {
+      categoryId = findExistingCategoryId(selected.categoryName, 'expense');
     }
 
-    if (!allowBudgetOverride) {
+    if (!isSafetyCapture) {
+      const spendableFunds = calculateCurrentSpendableFunds({
+        accounts,
+        savings: savingsList,
+        transactions,
+      });
+      if (value > spendableFunds) {
+        setSpendableBalancePrompt({ spendableFunds });
+        return;
+      }
+    }
+
+    if (!isSafetyCapture && !allowBudgetOverride) {
       const budgetGuard = await checkExpenseBudgetGuard({
         userId: user.id,
         amount: value,
@@ -153,7 +265,7 @@ export function QuickAddScreen() {
         return;
       }
     }
-    if (!allowNegativeBalance) {
+    if (!isSafetyCapture && !allowNegativeBalance && source) {
       const projectedBalance =
         source.type === 'account'
           ? getProjectedAccountBalance(source.id, value)
@@ -167,25 +279,75 @@ export function QuickAddScreen() {
         return;
       }
     }
+
+    if (!isSafetyCapture && !allowDuplicate && source) {
+      const duplicate = findDuplicateTransaction(
+        {
+          type: 'expense',
+          amount: value,
+          accountId: source.type === 'account' ? source.id : null,
+          toAccountId: null,
+          savingsGoalId: null,
+          fromSavingsGoalId: source.type === 'savings' ? source.id : null,
+          categoryId,
+        },
+        transactions
+      );
+
+      if (duplicate) {
+        setDuplicatePrompt({
+          candidate: duplicate,
+          allowBudgetOverride,
+          allowNegativeBalance,
+        });
+        return;
+      }
+    }
+
     try {
       setSaving(true);
-      let categoryId: string | null = null;
-      let notes = selected.label;
       if (selected.label === 'Custom') {
-        if (!customCategoryName.trim()) { setStatus('Enter a custom category name.'); setSaving(false); return; }
-        categoryId = (await ensureCategory(customCategoryName.trim(), 'expense')) ?? null;
-        notes = customCategoryName.trim();
+        categoryId = (await ensureCategory(notes, 'expense')) ?? null;
       } else if (selected.categoryName) {
         categoryId = (await ensureCategory(selected.categoryName, 'expense')) ?? null;
       }
+
+      if (isSafetyCapture) {
+        if (saveTarget === 'wishlist') {
+          await createWishlistItem({
+            userId: user.id,
+            itemName: notes,
+            estimatedPrice: value,
+            categoryId,
+            status: 'not_affordable',
+            notes,
+          });
+          setStatus(`${selected.label} saved to wishlist.`);
+          setTimeout(() => { resetQuickForm(); router.push('/wishlist' as any); }, 400);
+          return;
+        }
+
+        await createPurchaseWaitingRoomItem({
+          userId: user.id,
+          itemName: notes,
+          estimatedPrice: value,
+          categoryId,
+          reason: notes,
+          waitUntil: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+        });
+        setStatus(`${selected.label} saved to waiting room.`);
+        setTimeout(() => { resetQuickForm(); router.push('/waiting-room' as any); }, 400);
+        return;
+      }
+
       const now = new Date();
       await createTransaction({
         userId: user.id,
         type: 'expense',
         amount: value,
-        accountId: source.type === 'account' ? source.id : null,
+        accountId: source?.type === 'account' ? source.id : null,
         toAccountId: null,
-        fromSavingsGoalId: source.type === 'savings' ? source.id : null,
+        fromSavingsGoalId: source?.type === 'savings' ? source.id : null,
         categoryId,
         notes,
         photoUrl: null,
@@ -195,12 +357,21 @@ export function QuickAddScreen() {
         transactionAt: combineDateAndTime(toDateKey(now), toTimeKey(now)),
       });
       setStatus(`${selected.label} saved.`);
-      setTimeout(() => { setAmount(''); setSource(null); setCustomCategoryName(''); setSelected(null); setStatus(null); router.back(); }, 400);
+      setTimeout(() => { resetQuickForm(); router.back(); }, 400);
     } catch (error) {
       setStatus(error instanceof Error ? error.message : 'Failed to save.');
     } finally {
       setSaving(false);
     }
+  }
+
+  function resetQuickForm() {
+    setAmount('');
+    setSource(null);
+    setCustomCategoryName('');
+    setSelected(null);
+    setStatus(null);
+    setSaveTarget('transaction');
   }
 
   return (
@@ -215,7 +386,7 @@ export function QuickAddScreen() {
         {shortcuts.map((sc) => {
           const active = selected?.label === sc.label;
           return (
-            <Pressable key={sc.label} onPress={() => { setSelected(sc); setStatus(null); if (!source) { const pool = accounts.filter((a) => a.isSpendable).length > 0 ? accounts.filter((a) => a.isSpendable) : accounts; if (pool.length > 0) setSource({ type: 'account', id: pool[0].id }); else if (savingsList.length > 0) setSource({ type: 'savings', id: savingsList[0].id }); } }} style={[styles.card, active && styles.cardActive]}>
+            <Pressable key={sc.label} onPress={() => selectShortcut(sc)} style={[styles.card, active && styles.cardActive]}>
               <View style={styles.cardInner}>
                 <Ionicons name={sc.icon} size={24} color={active ? colors.surface : colors.primary} />
                 <Text style={[styles.cardLabel, active && styles.cardLabelActive]}>{sc.label}</Text>
@@ -242,6 +413,29 @@ export function QuickAddScreen() {
           )}
           <Text style={styles.label}>Amount</Text>
           <TextInput style={styles.amountInput} keyboardType="decimal-pad" placeholder="0.00" value={amount} onChangeText={setAmount} autoFocus={selected.label !== 'Custom'} />
+          <Text style={styles.label}>Save as</Text>
+          <View style={styles.chipRow}>
+            {[
+              { value: 'transaction', label: 'Transaction' },
+              { value: 'wishlist', label: 'Wishlist' },
+              { value: 'waiting_room', label: 'Waiting Room' },
+            ].map((option) => (
+              <Pressable
+                key={option.value}
+                onPress={() => setSaveTarget(option.value as QuickSaveTarget)}
+                style={[styles.chip, saveTarget === option.value && styles.chipActive]}
+              >
+                <Text style={[styles.chipText, saveTarget === option.value && styles.chipTextActive]}>
+                  {option.label}
+                </Text>
+              </Pressable>
+            ))}
+          </View>
+          {saveTarget !== 'transaction' ? (
+            <Text style={styles.helperText}>
+              This saves the expense idea for review and does not change balances.
+            </Text>
+          ) : null}
           <Text style={styles.label}>Account</Text>
           <View style={styles.chipRow}>
             {accounts.map((a) => (
@@ -267,7 +461,15 @@ export function QuickAddScreen() {
             </>
           ) : null}
           <Pressable onPress={() => handleSave()} disabled={saving} style={[styles.save, saving && styles.saveDisabled]}>
-            <Text style={styles.saveText}>{saving ? 'Saving...' : `Save ${selected.label}`}</Text>
+            <Text style={styles.saveText}>
+              {saving
+                ? 'Saving...'
+                : saveTarget === 'wishlist'
+                  ? `Save ${selected.label} to Wishlist`
+                  : saveTarget === 'waiting_room'
+                    ? `Save ${selected.label} to Waiting Room`
+                    : `Save ${selected.label}`}
+            </Text>
           </Pressable>
         </View>
       )}
@@ -327,6 +529,48 @@ export function QuickAddScreen() {
         onCancel={() => setNegativeBalancePrompt({ visible: false, onConfirm: () => {} })}
       />
       <AppModal
+        visible={Boolean(duplicatePrompt)}
+        title="Possible Duplicate"
+        message={
+          duplicatePrompt
+            ? buildDuplicateWarningMessage(duplicatePrompt.candidate)
+            : undefined
+        }
+        onRequestClose={() => setDuplicatePrompt(null)}
+        buttons={[
+          {
+            text: 'Cancel',
+            style: 'cancel',
+            onPress: () => setDuplicatePrompt(null),
+          },
+          {
+            text: 'Edit Existing',
+            style: 'cancel',
+            onPress: () => {
+              const id = duplicatePrompt?.candidate.transaction.id;
+              setDuplicatePrompt(null);
+              if (id) {
+                router.push(`/add-transaction?editId=${id}` as any);
+              }
+            },
+          },
+          {
+            text: 'Add Anyway',
+            onPress: () => {
+              const pending = duplicatePrompt;
+              setDuplicatePrompt(null);
+              if (pending) {
+                handleSave(
+                  pending.allowBudgetOverride,
+                  pending.allowNegativeBalance,
+                  true
+                );
+              }
+            },
+          },
+        ]}
+      />
+      <AppModal
         visible={Boolean(spendableBalancePrompt)}
         title="Spendable Balance Exceeded"
         message={
@@ -346,6 +590,26 @@ export function QuickAddScreen() {
   );
 }
 
+function buildDuplicateWarningMessage(candidate: DuplicateTransactionCandidate) {
+  const transaction = candidate.transaction;
+  const label =
+    transaction.categoryName ||
+    transaction.notes?.trim() ||
+    transaction.type.slice(0, 1).toUpperCase() + transaction.type.slice(1);
+  const source =
+    transaction.accountName ||
+    transaction.fromSavingsGoalName ||
+    transaction.savingsGoalName ||
+    transaction.toAccountName ||
+    'an account';
+  const minutes =
+    candidate.minutesAgo <= 0
+      ? 'just now'
+      : `${candidate.minutesAgo} minute${candidate.minutesAgo === 1 ? '' : 's'} ago`;
+
+  return `You already logged ${formatMoney(transaction.amount)} for ${label} from ${source} ${minutes}. Add again?`;
+}
+
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: colors.canvas },
   content: { paddingHorizontal: spacing.lg, paddingTop: spacing.lg, paddingBottom: 120, gap: spacing.lg },
@@ -362,6 +626,7 @@ const styles = StyleSheet.create({
   form: { backgroundColor: colors.surface, borderRadius: radii.xxl, padding: spacing.lg, gap: spacing.md, borderWidth: 1, borderColor: colors.border },
   formTitle: { fontSize: 16, fontWeight: '700', color: colors.ink, marginBottom: spacing.xs },
   label: { fontSize: 13, fontWeight: '600', color: colors.secondaryText, marginTop: spacing.xs },
+  helperText: { color: colors.mutedInk, fontSize: 12, lineHeight: 18 },
   input: { backgroundColor: colors.surfaceSecondary, borderWidth: 1, borderColor: colors.border, borderRadius: radii.lg, paddingHorizontal: spacing.md, paddingVertical: 12, fontSize: 15, color: colors.ink, marginBottom: spacing.sm },
   amountInput: { fontSize: 28, fontWeight: '700', color: colors.ink, borderBottomWidth: 2, borderBottomColor: colors.border, paddingVertical: spacing.sm },
   chipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },

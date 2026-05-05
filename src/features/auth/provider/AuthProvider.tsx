@@ -5,6 +5,9 @@ import { Platform } from 'react-native';
 import { bootstrapLocalUserData } from '@/db/bootstrapUserData';
 import { getSupabaseClient, supabase } from '@/integrations/supabase/client';
 import { ensureRemoteProfile } from '@/features/auth/services/profile';
+import { checkClientRateLimit, clearClientRateLimit } from '@/shared/utils/rateLimit';
+import { redactSensitiveText } from '@/shared/utils/redaction';
+import { normalizeTextInput } from '@/shared/validation/text';
 
 type SignInInput = {
   email: string;
@@ -28,6 +31,15 @@ type AuthContextValue = {
 };
 
 const AuthContext = createContext<AuthContextValue | null>(null);
+const AUTH_RATE_LIMIT = {
+  maxAttempts: 5,
+  windowMs: 10 * 60 * 1000,
+  cooldownMs: 2 * 60 * 1000,
+};
+
+function buildAuthRateLimitKey(email: string) {
+  return `auth:${email.trim().toLowerCase() || 'unknown'}`;
+}
 
 export function AuthProvider({ children }: PropsWithChildren) {
   const [session, setSession] = useState<Session | null>(null);
@@ -60,7 +72,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
         ]);
 
         if (sessionError) {
-          console.warn('Session error during bootstrap, clearing session:', sessionError.message);
+          console.warn('Session error during bootstrap, clearing session:', redactSensitiveText(sessionError));
           await client.auth.signOut();
           if (mounted) {
             setLoading(false);
@@ -79,7 +91,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
           sessionPromise.then(({ data: { session: lateSession }, error: lateError }) => {
             if (!mounted) return;
             if (lateError) {
-              console.warn('Late session fetch failed:', lateError.message);
+              console.warn('Late session fetch failed:', redactSensitiveText(lateError));
               client.auth.signOut().catch(() => {});
               return;
             }
@@ -88,19 +100,19 @@ export function AuthProvider({ children }: PropsWithChildren) {
               if (bootstrappedUserId.current !== lateSession.user.id) {
                 bootstrappedUserId.current = lateSession.user.id;
                 ensureRemoteProfile(lateSession.user).catch((error) => {
-                  console.warn('Profile bootstrap failed', error);
+                  console.warn('Profile bootstrap failed', redactSensitiveText(error));
                 });
                 bootstrapLocalUserData(lateSession.user.id).catch((error) => {
-                  console.warn('Local bootstrap failed', error);
+                  console.warn('Local bootstrap failed', redactSensitiveText(error));
                 });
               }
             }
           }).catch((error) => {
-            console.warn('Late session promise rejected:', error);
+            console.warn('Late session promise rejected:', redactSensitiveText(error));
           });
         }
       } catch (error) {
-        console.error('Failed to bootstrap auth state', error);
+        console.error('Failed to bootstrap auth state', redactSensitiveText(error));
         if (mounted) {
           setLoading(false);
         }
@@ -113,13 +125,13 @@ export function AuthProvider({ children }: PropsWithChildren) {
           await ensureRemoteProfile(currentSession.user);
           await bootstrapLocalUserData(currentSession.user.id);
         } catch (error) {
-          console.warn('Post-session bootstrap failed', error);
+          console.warn('Post-session bootstrap failed', redactSensitiveText(error));
         }
       }
     }
 
     bootstrap().catch((error) => {
-      console.error('Failed to bootstrap auth state', error);
+      console.error('Failed to bootstrap auth state', redactSensitiveText(error));
       if (mounted) {
         setLoading(false);
       }
@@ -138,10 +150,10 @@ export function AuthProvider({ children }: PropsWithChildren) {
           if (nextSession?.user && bootstrappedUserId.current !== nextSession.user.id) {
             bootstrappedUserId.current = nextSession.user.id;
             ensureRemoteProfile(nextSession.user).catch((error) => {
-              console.warn('Profile bootstrap failed', error);
+              console.warn('Profile bootstrap failed', redactSensitiveText(error));
             });
             bootstrapLocalUserData(nextSession.user.id).catch((error) => {
-              console.warn('Local bootstrap failed', error);
+              console.warn('Local bootstrap failed', redactSensitiveText(error));
             });
           }
         })
@@ -154,26 +166,42 @@ export function AuthProvider({ children }: PropsWithChildren) {
   }, []);
 
   async function signInWithEmail(input: SignInInput) {
+    const email = input.email.trim().toLowerCase();
+    await checkClientRateLimit(buildAuthRateLimitKey(email), AUTH_RATE_LIMIT);
     const client = getSupabaseClient();
     const { error } = await client.auth.signInWithPassword({
-      email: input.email.trim(),
+      email,
       password: input.password,
     });
+
+    if (!error) {
+      await clearClientRateLimit(buildAuthRateLimitKey(email));
+    }
 
     return error?.message ?? null;
   }
 
   async function signUpWithEmail(input: SignUpInput) {
+    const email = input.email.trim().toLowerCase();
+    await checkClientRateLimit(buildAuthRateLimitKey(email), AUTH_RATE_LIMIT);
     const client = getSupabaseClient();
+    const displayName = normalizeTextInput(input.displayName, {
+      fieldName: 'Display name',
+      maxLength: 80,
+    });
     const { error } = await client.auth.signUp({
-      email: input.email.trim(),
+      email,
       password: input.password,
       options: {
         data: {
-          display_name: input.displayName.trim(),
+          display_name: displayName,
         },
       },
     });
+
+    if (!error) {
+      await clearClientRateLimit(buildAuthRateLimitKey(email));
+    }
 
     return error?.message ?? null;
   }
@@ -189,7 +217,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
     try {
       await getSupabaseClient().auth.signOut();
     } catch (error) {
-      console.warn('Supabase signOut failed, local session already cleared', error);
+      console.warn('Supabase signOut failed, local session already cleared', redactSensitiveText(error));
     }
   }
 

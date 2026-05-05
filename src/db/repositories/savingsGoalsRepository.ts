@@ -2,6 +2,8 @@ import { getDatabase } from '@/db/sqlite/client';
 import { Savings, InterestPeriod } from '@/shared/types/domain';
 import { createId } from '@/shared/utils/id';
 import { nowIso } from '@/shared/utils/time';
+import { normalizeMoneyAmount } from '@/shared/validation/money';
+import { normalizeRequiredTextInput } from '@/shared/validation/text';
 import { buildSyncQueueItem } from '@/sync/queue/factory';
 import { enqueueSyncItem } from '@/sync/queue/repository';
 
@@ -57,6 +59,39 @@ function mapSavings(row: SavingsRow): Savings {
   };
 }
 
+const allowedInterestPeriods: InterestPeriod[] = [
+  'daily',
+  'weekly',
+  'monthly',
+  'quarterly',
+  'semi_annual',
+  'annual',
+];
+
+function normalizeInterestPeriod(value: InterestPeriod | undefined) {
+  const period = value ?? 'annual';
+  if (!allowedInterestPeriods.includes(period)) {
+    throw new Error('Invalid interest period.');
+  }
+
+  return period;
+}
+
+function normalizeRate(value: number | undefined, fieldName: string) {
+  return normalizeMoneyAmount(value ?? 0, {
+    fieldName,
+    allowZero: true,
+    max: 100,
+  });
+}
+
+function normalizeSavingsAmount(value: number | undefined, fieldName: string) {
+  return normalizeMoneyAmount(value ?? 0, {
+    fieldName,
+    allowZero: true,
+  });
+}
+
 export async function listSavingsByUser(userId: string) {
   const database = getDatabase();
   const rows = await database.getAllAsync<SavingsRow>(
@@ -89,13 +124,13 @@ export async function createSavings(input: CreateSavingsInput) {
   const savings: Savings = {
     id: createId(),
     userId: input.userId,
-    name: input.name.trim(),
-    currentAmount: input.currentAmount ?? 0,
-    interestRate: input.interestRate ?? 0,
-    interestPeriod: input.interestPeriod ?? 'annual',
-    minimumBalanceForInterest: input.minimumBalanceForInterest ?? 0,
-    withholdingTaxRate: input.withholdingTaxRate ?? 0,
-    maintainingBalance: input.maintainingBalance ?? 0,
+    name: normalizeRequiredTextInput(input.name, { fieldName: 'Savings name', maxLength: 80 }),
+    currentAmount: normalizeSavingsAmount(input.currentAmount, 'Current amount'),
+    interestRate: normalizeRate(input.interestRate, 'Interest rate'),
+    interestPeriod: normalizeInterestPeriod(input.interestPeriod),
+    minimumBalanceForInterest: normalizeSavingsAmount(input.minimumBalanceForInterest, 'Minimum balance for interest'),
+    withholdingTaxRate: normalizeRate(input.withholdingTaxRate, 'Withholding tax rate'),
+    maintainingBalance: normalizeSavingsAmount(input.maintainingBalance, 'Maintaining balance'),
     isSpendable: input.isSpendable ?? false,
     deletedAt: null,
     createdAt: timestamp,
@@ -149,13 +184,13 @@ export async function updateSavings(input: UpdateSavingsInput) {
         updated_at = ?
     where id = ? and user_id = ? and deleted_at is null`,
     [
-      input.name.trim(),
-      input.currentAmount,
-      input.interestRate,
-      input.interestPeriod,
-      input.minimumBalanceForInterest,
-      input.withholdingTaxRate,
-      input.maintainingBalance,
+      normalizeRequiredTextInput(input.name, { fieldName: 'Savings name', maxLength: 80 }),
+      normalizeSavingsAmount(input.currentAmount, 'Current amount'),
+      normalizeRate(input.interestRate, 'Interest rate'),
+      normalizeInterestPeriod(input.interestPeriod),
+      normalizeSavingsAmount(input.minimumBalanceForInterest, 'Minimum balance for interest'),
+      normalizeRate(input.withholdingTaxRate, 'Withholding tax rate'),
+      normalizeSavingsAmount(input.maintainingBalance, 'Maintaining balance'),
       input.isSpendable ? 1 : 0,
       updatedAt,
       input.id,
@@ -174,6 +209,9 @@ export async function updateSavings(input: UpdateSavingsInput) {
 }
 
 export async function adjustSavingsAmount(id: string, userId: string, delta: number) {
+  if (!Number.isFinite(delta)) {
+    throw new Error('Savings adjustment must be a valid number.');
+  }
   const database = getDatabase();
   const updatedAt = nowIso();
 

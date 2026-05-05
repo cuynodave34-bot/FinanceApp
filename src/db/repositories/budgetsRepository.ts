@@ -2,6 +2,8 @@ import { getDatabase } from '@/db/sqlite/client';
 import { Budget } from '@/shared/types/domain';
 import { createId } from '@/shared/utils/id';
 import { isDateKey, nowIso } from '@/shared/utils/time';
+import { normalizeMoneyAmount } from '@/shared/validation/money';
+import { normalizeTextInput } from '@/shared/validation/text';
 import { buildSyncQueueItem } from '@/sync/queue/factory';
 import { enqueueSyncItem } from '@/sync/queue/repository';
 
@@ -31,11 +33,10 @@ function mapBudget(row: BudgetRow): Budget {
 }
 
 function normalizeBudgetAmount(value: number) {
-  if (!Number.isFinite(value) || value < 0) {
-    throw new Error('Budget amount must be zero or greater.');
-  }
-
-  return Number(value.toFixed(2));
+  return normalizeMoneyAmount(value, {
+    fieldName: 'Budget amount',
+    allowZero: true,
+  });
 }
 
 export async function listBudgetsByUser(userId: string) {
@@ -68,7 +69,7 @@ export async function upsertBudget(input: UpsertBudgetInput) {
 
   const budgetAmount = normalizeBudgetAmount(input.budgetAmount);
   const carriedOverAmount = normalizeBudgetAmount(input.carriedOverAmount ?? 0);
-  const notes = input.notes?.trim() ? input.notes.trim() : null;
+  const notes = normalizeTextInput(input.notes, { fieldName: 'Budget notes', maxLength: 1000 });
   const database = getDatabase();
   const existing = await database.getFirstAsync<{ id: string; createdAt: string }>(
     `select id, created_at as createdAt

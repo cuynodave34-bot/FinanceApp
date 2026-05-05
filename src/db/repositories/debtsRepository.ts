@@ -2,6 +2,8 @@ import { getDatabase } from '@/db/sqlite/client';
 import { Debt, DebtStatus, DebtType } from '@/shared/types/domain';
 import { createId } from '@/shared/utils/id';
 import { nowIso } from '@/shared/utils/time';
+import { normalizeMoneyAmount } from '@/shared/validation/money';
+import { normalizeRequiredTextInput, normalizeTextInput } from '@/shared/validation/text';
 import { buildSyncQueueItem } from '@/sync/queue/factory';
 import { enqueueSyncItem } from '@/sync/queue/repository';
 
@@ -68,6 +70,36 @@ function mapDebt(row: DebtRow): Debt {
   };
 }
 
+const allowedDebtTypes: DebtType[] = ['lent', 'borrowed'];
+const allowedDebtStatuses: DebtStatus[] = ['pending', 'paid'];
+
+function normalizeDebtType(value: DebtType) {
+  if (!allowedDebtTypes.includes(value)) {
+    throw new Error('Invalid debt type.');
+  }
+
+  return value;
+}
+
+function normalizeDebtStatus(value: DebtStatus | undefined) {
+  const status = value ?? 'pending';
+  if (!allowedDebtStatuses.includes(status)) {
+    throw new Error('Invalid debt status.');
+  }
+
+  return status;
+}
+
+function normalizeDebtAmount(value: number | undefined, fieldName: string) {
+  return normalizeMoneyAmount(value ?? 0, { fieldName, allowZero: true });
+}
+
+function assertPaidDoesNotExceedTotal(paidAmount: number, totalAmount: number) {
+  if (paidAmount > totalAmount) {
+    throw new Error('Paid amount cannot exceed total amount.');
+  }
+}
+
 export async function listDebtsByUser(userId: string) {
   const database = getDatabase();
   const rows = await database.getAllAsync<DebtRow>(
@@ -98,18 +130,21 @@ export async function listDebtsByUser(userId: string) {
 export async function createDebt(input: CreateDebtInput) {
   const database = getDatabase();
   const timestamp = nowIso();
+  const totalAmount = normalizeDebtAmount(input.totalAmount, 'Total amount');
+  const paidAmount = normalizeDebtAmount(input.paidAmount, 'Paid amount');
+  assertPaidDoesNotExceedTotal(paidAmount, totalAmount);
   const debt: Debt = {
     id: createId(),
     userId: input.userId,
-    name: input.name.trim(),
-    debtType: input.debtType,
-    totalAmount: input.totalAmount,
-    paidAmount: input.paidAmount ?? 0,
-    status: input.status ?? 'pending',
+    name: normalizeRequiredTextInput(input.name, { fieldName: 'Debt name', maxLength: 80 }),
+    debtType: normalizeDebtType(input.debtType),
+    totalAmount,
+    paidAmount,
+    status: normalizeDebtStatus(input.status),
     linkedTransactionId: input.linkedTransactionId ?? null,
     accountId: input.accountId ?? null,
     dueDate: input.dueDate ?? null,
-    notes: input.notes?.trim() ? input.notes.trim() : null,
+    notes: normalizeTextInput(input.notes, { fieldName: 'Debt notes', maxLength: 1000 }),
     deletedAt: null,
     createdAt: timestamp,
     updatedAt: timestamp,
@@ -149,6 +184,9 @@ export async function createDebt(input: CreateDebtInput) {
 export async function updateDebt(input: UpdateDebtInput) {
   const database = getDatabase();
   const updatedAt = nowIso();
+  const totalAmount = normalizeDebtAmount(input.totalAmount, 'Total amount');
+  const paidAmount = normalizeDebtAmount(input.paidAmount, 'Paid amount');
+  assertPaidDoesNotExceedTotal(paidAmount, totalAmount);
 
   await database.runAsync(
     `update debts
@@ -164,15 +202,15 @@ export async function updateDebt(input: UpdateDebtInput) {
         updated_at = ?
     where id = ? and user_id = ? and deleted_at is null`,
     [
-      input.name.trim(),
-      input.debtType,
-      input.totalAmount,
-      input.paidAmount,
-      input.status,
+      normalizeRequiredTextInput(input.name, { fieldName: 'Debt name', maxLength: 80 }),
+      normalizeDebtType(input.debtType),
+      totalAmount,
+      paidAmount,
+      normalizeDebtStatus(input.status),
       input.linkedTransactionId ?? null,
       input.accountId ?? null,
       input.dueDate ?? null,
-      input.notes?.trim() ? input.notes.trim() : null,
+      normalizeTextInput(input.notes, { fieldName: 'Debt notes', maxLength: 1000 }),
       updatedAt,
       input.id,
       input.userId,
@@ -195,6 +233,7 @@ export async function markDebtAsPaid(
   linkedTransactionId: string,
   totalAmount: number
 ) {
+  const normalizedTotalAmount = normalizeDebtAmount(totalAmount, 'Total amount');
   const database = getDatabase();
   const updatedAt = nowIso();
 
@@ -205,13 +244,13 @@ export async function markDebtAsPaid(
         linked_transaction_id = ?,
         updated_at = ?
     where id = ? and user_id = ? and deleted_at is null`,
-    [totalAmount, linkedTransactionId, updatedAt, id, userId]
+    [normalizedTotalAmount, linkedTransactionId, updatedAt, id, userId]
   );
 
   const payload = {
     id,
     userId,
-    paidAmount: totalAmount,
+    paidAmount: normalizedTotalAmount,
     status: 'paid',
     linkedTransactionId,
     updatedAt,
